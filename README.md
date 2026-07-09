@@ -25,3 +25,8 @@ SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh ~/projects/solgate  # 대형 e2e
 
 사양 SSoT: `REQUIREMENTS.md` (SR1~SR11). 실패 기록: `FAILURE_LOG.md`.
 로그/캐시: `~/.solgate/{logs,cache}` — 로그에 대화 원문 저장 금지(SR8).
+
+## 작업 기록
+
+Claude와의 빌드/변경 세션은 `docs/BACKLOG.md`에 세션 단위로 append한다
+(목표 → 결정 → 실측 증거 → 남은 것). 산문 주장 없이 증거만 기록.
