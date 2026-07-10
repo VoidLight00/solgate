@@ -73,6 +73,43 @@
 
 ### 남은 것 / 알려진 제약
 
-- luna auth_unavailable 원인(카탈로그 override_header 의심)은 cli-proxy-api 업스트림 이슈 — 추적만
+- luna auth_unavailable 원인(카탈로그 override_header 의심)은 cli-proxy-api 업스트림 이슈 — 추적만 → **같은 날 세션 2에서 해결(아래)**
 - 가상 1M의 요약 품질은 세션 종류에 따라 체감 다름 — 장기 사용 후 SUMMARIZER_SYSTEM 프롬프트 튜닝 여지
 - gpt-5.5 구실측 "~200k 천장"은 재검증 안 함(카탈로그 272k) — 레거시라 보수 캡 유지
+
+---
+
+## 2026-07-10 (세션 2) — vgpt에서 terra·luna 실사용 개통 + GitHub 공개
+
+### 목표
+
+`vgpt terra` / `vgpt luna` 를 실제 사용 가능하게. + 리포 GitHub 업로드와 세션 백로그 프로세스 확립.
+
+### 진행/증거
+
+1. **GitHub**: `VoidLight00/solgate` PRIVATE 생성, main push 원격 검증(ls-remote 일치).
+   세션 백로그 컨벤션(docs/BACKLOG.md append) README에 명문화.
+2. **terra**: 배선 이미 완료 상태 + VibeProxy 직결 실측 `TERRA-PONG` — 즉시 사용 가능.
+3. **luna 근인 확정(SG-001b)**: codex CLI로는 `LUNA-CLI-PONG` 정상 → 백엔드 문제 아님.
+   CLIProxyAPI 소스 확인 결과 plan_type "prolite"는 default→CodexPro 목록(luna 포함)이라
+   등록돼야 정상. VibeProxy 내장 7.2.54(07-08 빌드)가 07-09 카탈로그에 추가된 luna의
+   `config.override_header` 신필드를 처리 못하는 구버전 버그. 7.2.58(커밋 26d45fd,
+   "add model header overrides from configuration")로 격리 인스턴스(:8390) 실측 → auth 통과.
+4. **해법 결정**: VibeProxy.app 바이너리 스왑은 권한 분류기가 차단(서명 앱 변조) →
+   **사이드카**: `~/.local/bin/cli-proxy-api-sidecar`(7.2.58) + launchd
+   `com.voidlight.cpap-sidecar` :8331 + CCR provider `cpapside`(luna만) +
+   custom-router `SIDECAR_MODELS`. sol/terra는 기존 VibeProxy 경로 유지.
+5. **최종 실측**: CCR 풀체인 luna → `usage_limit_reached`(실 업스트림 429) 도달 =
+   auth 매칭 해결 증명. 정상 PONG은 플랜 한도 리셋(~11:37) 후 가능.
+
+### 오늘의 비용 교훈
+
+대형 게이트 실측(288k 프로브 + compact e2e 2회 ≈ 총 1.3M+ input tokens)이 prolite 플랜
+사용량 한도를 소진시켜 sol/terra/luna 전체가 ~2.5h 잠김(`model_cooldown`/`usage_limit_reached`).
+→ 대형 e2e는 `SOLGATE_SKIP_BIG=1`로 스킵 가능하게 이미 설계돼 있음. 반복 실행 금지,
+한도 여유 있는 시간대에만 풀게이트.
+
+### 남은 것
+
+- [ ] 한도 리셋 후 `vgpt luna` 실 PONG 확인 (auth는 이미 증명됨)
+- [ ] VibeProxy가 7.2.58+ 엔진을 내장하면 사이드카 제거(custom-router SIDECAR_MODELS 주석 참조)
