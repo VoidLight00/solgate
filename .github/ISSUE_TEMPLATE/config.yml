@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 질문 / 토론
+    url: ../../discussions
+    about: 버그가 아닌 질문은 Discussions 에서 해주세요.
+  - name: 🔒 보안 취약점
+    url: ../../security/advisories/new
+    about: 보안 문제는 공개 이슈 대신 Security Advisory 로 비공개 보고하세요.

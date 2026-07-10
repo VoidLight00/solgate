@@ -1,0 +1,35 @@
+name: 🐛 Bug Report
+description: 재현 가능한 버그를 신고합니다
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "버그 신고 감사합니다. 재현 절차를 자세히 적을수록 빨리 고칠 수 있습니다."
+  - type: textarea
+    id: what
+    attributes:
+      label: 무슨 일이 일어났나요?
+      description: 기대한 동작과 실제 동작을 함께 적어주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 재현 절차
+      placeholder: |
+        1. ...
+        2. ...
+        3. 오류 발생
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 버전
+      placeholder: "예: v1.2.3"
+  - type: textarea
+    id: env
+    attributes:
+      label: 환경
+      placeholder: "OS, 런타임 버전 등"

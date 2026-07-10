@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.solgate.gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{NODE_BIN}}</string>
+    <string>{{REPO_ROOT}}/server.mjs</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SOLGATE_UPSTREAM</key>
+    <string>{{UPSTREAM}}</string>
+    <key>SOLGATE_UPSTREAM_LUNA</key>
+    <string>{{UPSTREAM_LUNA}}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{HOME}}/.solgate/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>{{HOME}}/.solgate/logs/launchd.err.log</string>
+</dict>
+</plist>

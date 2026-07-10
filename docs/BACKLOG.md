@@ -174,3 +174,46 @@ Claude Code 모델 별칭 슬롯(env) 매핑 — `vgpt`/`vgpt1m` (zshrc + vclaud
   `claude --model opus -p` → `TIER-OPUS-OK` + solgate 로그 `model: gpt-5.6-sol, status: 200`
 - wiring_gate에 티어 env 배선 검사 추가(zshrc·vclaude-proxy 양쪽 grep) → PASS.
 - 신규 셸부터 적용 (기존 셸은 `source ~/.zshrc`).
+
+---
+
+## 2026-07-10 (세션 5) — 원웨이 설치기 + /github 프로페셔널화
+
+### 니즈
+
+다른 사람 PC에서도 GitHub 코드 기반으로 한 커맨드 올바른 세팅. `/github` 하네스로
+업로드 품질 개선. 공개범위 질문 결과: **PRIVATE 유지**(collaborator 초대 접근),
+/gi 이미지 포함.
+
+### 구현 — 설치기 (`setup.sh` + `install/`)
+
+- `setup.sh doctor|install|uninstall` (macOS·bash 3.2 호환, 멱등):
+  doctor(node≥20/claude/ccr/업스트림 gpt-5.6 노출, fail-closed) →
+  **luna auth 프로브로 구엔진 버그 자동 감지** → 감지 시 CLIProxyAPI 7.2.58
+  사이드카 자동 설치(공식 릴리스, arch별 asset) → solgate launchd
+  (`com.solgate.gateway`, 템플릿 렌더: NODE_BIN/REPO_ROOT/HOME/UPSTREAM 치환) →
+  `install/merge-ccr.mjs`로 CCR provider **비파괴 머지**(백업 후) →
+  zshrc 마커 블록(`# >>> solgate >>>`) → CCR 풀체인 PONG 실측(한도 중이면
+  usage_limit 도달도 체인 OK로 인정).
+- **이식성 핵심**: 설치판 셸 함수(`install/solgate.zsh`)는 `solgate,<model>`
+  provider-prefix 형식 → **custom-router 없이 CCR 내장 라우팅만으로 동작**.
+  실측: `PREFIX-PONG` (CCR→solgate→sol 200).
+- `gates/install_gate.sh` 신설: 문법 3종 + 템플릿 플레이스홀더/렌더 잔존 0 +
+  doctor 실측 exit 0 + 셸함수 모델/캡 해석 스모크. 마스터 게이트 자동 발견(8종째).
+
+### 구현 — /github 파이프라인
+
+- `bin/github init --tier full`: LICENSE(MIT)·CHANGELOG·CITATION·Makefile·
+  .github 커뮤니티 세트(SECURITY/SUPPORT/ISSUE/PR/dependabot/CODEOWNERS/workflows)·
+  commit-msg 훅(Conventional Commits 강제).
+- 템플릿 README가 실내용을 덮어써서 전면 재작성: 실 기능 4종 요약, 실제 Quick Start,
+  mermaid 토폴로지, 게이트 안내, 정직성 고지("실창을 늘리지 못한다") 포함.
+  이모지 헤더 제거(aislop 톤 룰 우선).
+- /gi 이미지: hero(태양 게이트+3티어 궤도+압축 리본, 텍스트 제로) + og(1.91:1 크롭).
+  가짜 다이어그램/UI 스크린샷류는 AI 슬롭 위험으로 배제 — 아키텍처는 mermaid 유지.
+
+### 증거
+
+- `bin/github doctor` P0=0 P1=0 P2=0 P3=0 PASS / `bin/github qa` publish-ready PASS
+- 마스터 게이트 8서브게이트 `VERIFY PASS` (SOLGATE_SKIP_BIG=1)
+- PREFIX-PONG(제네릭 라우팅) + install_gate PASS 실측

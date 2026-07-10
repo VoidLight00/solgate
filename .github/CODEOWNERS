@@ -1,0 +1,7 @@
+# Code owners — PR 시 자동 리뷰 지정. 자세히: https://docs.github.com/articles/about-code-owners
+# 기본: 저장소 전체를 소유자가 리뷰
+*       @Son
+
+# 내부/민감 경로는 소유자만
+/docs-private/   @Son
+/.github/        @Son

@@ -1,33 +1,91 @@
+<div align="center">
+
 # solgate
 
-gpt-5.6-sol(실창 372k input) 위에 **가상 1M 컨텍스트**를 만드는 로컬 프록시.
-전체 방법서(토폴로지·사용법·재현 절차·트러블슈팅)는 **[docs/GUIDE.md](docs/GUIDE.md)** 가 정본이다.
-300k 초과 대화의 오래된 구간을 gpt-5.6-luna 청크 요약으로 접고, 최근 ~200k는 원문 유지한다.
-물리 창을 늘리는 게 아니라 압축 계층이다 — 오래된 턴은 요약본(무손실 아님).
+![hero](assets/hero.png)
+
+ChatGPT 구독(OAuth)으로 Claude Code에서 GPT-5.6 sol/terra/luna를 풀컨텍스트로 쓰는 로컬 게이트웨이.
+가상 1M 컨텍스트(롤링 요약) · 쿼터 자동 폴백(+문구 노출) · 서브에이전트 모델 티어.
+
+![License](https://img.shields.io/badge/License-MIT-yellow.svg) ![Status](https://img.shields.io/badge/status-active-brightgreen.svg) ![Platform](https://img.shields.io/badge/platform-macOS-black.svg) ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg) ![Gates](https://img.shields.io/badge/HARD%20gates-8%20passing-success.svg) ![Conventional%20Commits](https://img.shields.io/badge/commits-conventional-FE5196.svg)
+
+</div>
+
+---
+
+## 무엇을 하는가
+
+- **가상 1M 컨텍스트** — gpt-5.6-sol의 실창은 input 372k다. solgate는 300k 초과 대화의 오래된 구간을 청크 롤링 요약(캐시 포함)으로 접고 최근 ~200k를 원문 유지해 체감 1M 세션을 만든다. 물리 창을 늘리는 게 아니라 압축 계층이다 — 오래된 턴은 요약본이 된다.
+- **쿼터 자동 폴백 + 문구 노출** — 사용량 한도(429)·쿨다운 시 sol→terra→luna 체인으로 자동 전환하고, 응답 첫머리에 어떤 모델로 대체됐는지 문구를 주입한다. 세션은 죽지 않고, 전환은 숨기지 않는다.
+- **서브에이전트 모델 티어** — Claude Code의 Agent/Workflow 별칭이 `opus`=sol, `sonnet`=terra, `haiku`=luna로 풀린다. 메인은 sol로, 워커는 가볍게.
+- **fail-closed 천장** — 어떤 경로로도 모델 실창(372k)을 초과해 전송하지 않는다. tools 정의 토큰까지 차감해 마진을 지킨다.
+
+폴백이 일어나면 대화에 이렇게 보인다:
 
 ```
-Claude Code(vgpt1m, [1m]) → CCR :3456 → solgate :8321 → VibeProxy :8317 → gpt-5.6-sol
-                                     요약 사이드콜 ↘ gpt-5.6-luna
+[solgate fallback] gpt-5.6-sol → gpt-5.6-terra (gpt-5.6-sol: usage_limit_reached, gpt-5.6-sol 리셋 ~11:42)
 ```
 
-## 사용
+## Quick Start
 
-- `vgpt1m` — 가상 1M 세션 (zshrc)
-- `vgpt` — 물리 372k 세션 (sol[330k], solgate 미경유)
-- 상태: `curl http://127.0.0.1:8321/solgate/stats`
-- 상주: launchd `com.voidlight.solgate` (KeepAlive)
-
-## 검증 (HARD 게이트)
+전제: macOS · Node 20+ · [Claude Code CLI](https://claude.com/claude-code) · [claude-code-router](https://github.com/musistudio/claude-code-router)(`ccr`) · VibeProxy 등 ChatGPT OAuth 업스트림(:8317) 로그인 완료.
 
 ```bash
-bash gates/verify_solgate.sh ~/projects/solgate          # 전체 (대형 compaction e2e 포함, 토큰 소모 큼)
-SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh ~/projects/solgate  # 대형 e2e만 스킵
+git clone https://github.com/VoidLight00/solgate.git ~/projects/solgate
+cd ~/projects/solgate && ./setup.sh install
 ```
 
-사양 SSoT: `REQUIREMENTS.md` (SR1~SR11). 실패 기록: `FAILURE_LOG.md`.
-로그/캐시: `~/.solgate/{logs,cache}` — 로그에 대화 원문 저장 금지(SR8).
+`setup.sh install`은 멱등이며 다음을 한 번에 수행한다: 전제조건 doctor(fail-closed) → luna 엔진 버그 자동 감지 시 사이드카 설치 → solgate launchd 상주(:8321) → CCR provider 비파괴 머지 → zshrc 함수 블록 → CCR 풀체인 PONG 실측. 점검만: `./setup.sh doctor`, 제거: `./setup.sh uninstall`.
 
-## 작업 기록
+## 사용법
 
-Claude와의 빌드/변경 세션은 `docs/BACKLOG.md`에 세션 단위로 append한다
-(목표 → 결정 → 실측 증거 → 남은 것). 산문 주장 없이 증거만 기록.
+```bash
+vgpt              # gpt-5.6-sol[330k] — 물리 풀컨텍스트 (기본)
+vgpt terra        # gpt-5.6-terra[330k]
+vgpt luna         # gpt-5.6-luna[330k]
+vgpt1m            # gpt-5.6-sol-1m[1m] — 가상 1M (롤링 요약)
+vgpt models       # 도움말
+```
+
+세션 중 전환은 `/model solgate,gpt-5.6-terra[330k]` 형식(`[330k]` 라벨 필수 — auto-compact 시점 선언). 서브에이전트는 `model: "opus" | "sonnet" | "haiku"` 별칭으로 티어를 고른다. 상태 확인:
+
+```bash
+curl http://127.0.0.1:8321/solgate/stats
+# {"requests":..,"compactions":..,"cacheHits":..,"fallbacks":..,"degraded":..}
+```
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+  A["Claude Code<br/>(vgpt / vgpt1m)"] --> B["CCR :3456<br/>Anthropic↔OpenAI"]
+  B --> C["solgate :8321<br/>압축·폴백·티어"]
+  C -->|sol / terra| D["VibeProxy :8317<br/>ChatGPT OAuth"]
+  C -->|luna| E["sidecar :8331<br/>(엔진 버그 우회)"]
+  C -.->|"300k 초과분<br/>청크 요약"| D
+  D --> F["chatgpt.com backend<br/>실창 372k"]
+  E --> F
+```
+
+토폴로지·물리 팩트·트러블슈팅·수동 재현 절차는 [docs/GUIDE.md](docs/GUIDE.md)가 정본이다.
+
+## 검증
+
+모든 완료 주장은 HARD 게이트의 종료코드로만 판정한다:
+
+```bash
+SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh .   # 평시 (대형 e2e 스킵)
+bash gates/verify_solgate.sh .                       # 전체 (~330k 토큰 compaction e2e 포함)
+```
+
+게이트 8종: unit(순수 함수 + 폴백 모킹 e2e) · service · e2e_small · e2e_compact(needle+캐시+비강등) · wiring · install · secrets · no_vertical_stripe. 요구사항 SSoT는 [REQUIREMENTS.md](REQUIREMENTS.md)(SR1~SR13), 실패 기록은 [FAILURE_LOG.md](FAILURE_LOG.md), 세션별 작업 기록은 [docs/BACKLOG.md](docs/BACKLOG.md).
+
+## 알아둘 것
+
+- 이 프로젝트는 모델 실창을 늘리지 못한다. "1M"은 요약 기반 가상 계층이며 무손실이 아니다.
+- 플랜 사용량 한도는 sol/terra/luna가 공유한다. 폴백은 한도를 우회하는 게 아니라 소진 순서를 관리한다.
+- 업스트림(ChatGPT OAuth)은 본인 구독·본인 계정 범위에서만 사용한다.
+
+## License
+
+MIT © 2026 — [LICENSE](LICENSE)

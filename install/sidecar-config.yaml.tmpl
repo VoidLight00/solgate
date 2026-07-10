@@ -1,0 +1,17 @@
+# solgate sidecar — CLIProxyAPI {{SIDECAR_VERSION}} (gpt-5.6-luna auth 버그 우회 전용)
+# VibeProxy가 신엔진(7.2.58+)을 내장하면 이 사이드카는 제거한다:
+#   launchctl unload ~/Library/LaunchAgents/com.solgate.sidecar.plist
+#   solgate plist의 SOLGATE_UPSTREAM_LUNA를 upstream(8317)으로 되돌리고 재시작
+host: 127.0.0.1
+port: {{SIDECAR_PORT}}
+auth-dir: ~/.cli-proxy-api
+debug: false
+logging-to-file: false
+usage-statistics-enabled: false
+request-retry: 3
+request-timeout: 10m
+quota-exceeded:
+  switch-preview-model: true
+  switch-project: true
+remote-management:
+  allow-remote: false

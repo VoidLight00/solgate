@@ -102,6 +102,27 @@ curl http://127.0.0.1:8331/v1/models        # sidecar 모델 목록
 
 ## 4. 처음부터 재현 (새 머신)
 
+### 원웨이 자동 설치 (권장)
+
+전제: macOS + Node 20+ + Claude Code CLI + claude-code-router(`ccr`) +
+VibeProxy(ChatGPT OAuth 로그인 완료). 그 다음 한 커맨드:
+
+```bash
+git clone https://github.com/VoidLight00/solgate.git ~/projects/solgate
+cd ~/projects/solgate && ./setup.sh install
+```
+
+setup.sh가 하는 일: doctor(전제조건 fail-closed 검증) → luna auth 프로브(구엔진
+버그 감지 시 사이드카 자동 설치) → solgate launchd 상주 → CCR provider 비파괴
+머지 → zshrc 함수 블록 추가 → CCR 풀체인 PONG 실측. 상태 점검만 하려면
+`./setup.sh doctor`, 제거는 `./setup.sh uninstall`.
+
+설치판 셸 함수(install/solgate.zsh)는 `solgate,<model>` provider-prefix 형식을
+써서 **custom-router 없이 CCR 내장 라우팅만으로 동작**한다(이식성 핵심,
+PREFIX-PONG 실측). 아래는 수동 재현 절차다.
+
+### 수동 재현
+
 1. **codex CLI 최신화**: `npm install -g @openai/codex@latest` → `codex exec -m gpt-5.6-sol "PONG"` 확인
 2. **VibeProxy** 설치·OAuth 로그인 → 새 모델 안 보이면 앱 재시작(원격 카탈로그 재fetch)
 3. **sidecar** (luna 버그가 있는 엔진일 때만): 공식 릴리스 darwin_aarch64 →
