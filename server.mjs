@@ -13,6 +13,8 @@ import { Readable } from "node:stream";
 export const CFG = {
   PORT: Number(process.env.SOLGATE_PORT || 8321),
   UPSTREAM: process.env.SOLGATE_UPSTREAM || "http://127.0.0.1:8317",
+  // luna는 VibeProxy 내장 7.2.54 버그(SG-001b)로 cpap-sidecar(7.2.58) 경유
+  UPSTREAM_LUNA: process.env.SOLGATE_UPSTREAM_LUNA || "http://127.0.0.1:8331",
   UPSTREAM_MODEL: process.env.SOLGATE_UPSTREAM_MODEL || "gpt-5.6-sol",
   VIRTUAL_ID: process.env.SOLGATE_VIRTUAL_ID || "gpt-5.6-sol-1m",
   VIRTUAL_CONTEXT: 1_000_000,
@@ -34,7 +36,47 @@ export const stats = {
   cacheHits: 0,
   cacheMisses: 0,
   degraded: 0,
+  fallbacks: 0,
 };
+
+// ---------- 쿼터/한도 자동 폴백 (SR12) ----------
+// 요청 모델이 429/한도/auth 불가면 같은 체급 안에서 갈아타고,
+// 응답 첫머리에 어떤 모델로 폴백됐는지 문구를 주입한다.
+export const FAILOVER_CHAIN = {
+  "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna"],
+  "gpt-5.6-terra": ["gpt-5.6-luna", "gpt-5.6-sol"],
+  "gpt-5.6-luna": ["gpt-5.6-terra", "gpt-5.6-sol"],
+};
+
+export function upstreamFor(model, cfg = CFG) {
+  return model === "gpt-5.6-luna" ? cfg.UPSTREAM_LUNA : cfg.UPSTREAM;
+}
+
+export function shouldFailover(status, bodyText) {
+  if (status === 429) return true;
+  return /usage_limit_reached|model_cooldown|auth_unavailable/.test(bodyText || "");
+}
+
+export function parseFailReason(bodyText) {
+  try {
+    const e = JSON.parse(bodyText || "{}").error || {};
+    return {
+      reason: e.type || e.code || (e.message || "").slice(0, 60) || "upstream error",
+      resetSeconds: Number(e.resets_in_seconds || e.reset_seconds || 0),
+    };
+  } catch {
+    return { reason: "upstream error", resetSeconds: 0 };
+  }
+}
+
+export function fallbackNotice(from, to, reason, resetSeconds) {
+  let when = "";
+  if (resetSeconds > 0) {
+    const t = new Date(Date.now() + resetSeconds * 1000);
+    when = `, ${from} 리셋 ~${t.getHours()}:${String(t.getMinutes()).padStart(2, "0")}`;
+  }
+  return `[solgate fallback] ${from} → ${to} (${reason}${when})\n\n`;
+}
 
 // ---------- 토큰 추정 (SR10: CJK 인식 — 한글 과소추정으로 천장 초과 금지) ----------
 export function estimateTokens(text) {
@@ -206,7 +248,7 @@ const SUMMARIZER_SYSTEM = [
 ].join(" ");
 
 async function upstreamChat(model, systemPrompt, userText) {
-  const res = await fetch(`${CFG.UPSTREAM}/v1/chat/completions`, {
+  const res = await fetch(`${upstreamFor(model)}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -238,7 +280,9 @@ async function summarizeChunk(chunk) {
     summary = await upstreamChat(CFG.SUMMARY_MODEL, SUMMARIZER_SYSTEM, body);
   } catch {
     try {
-      summary = await upstreamChat(CFG.SUMMARY_MODEL, SUMMARIZER_SYSTEM, body);
+      // 요약 모델도 한도에 걸릴 수 있다 — 체인의 다음 모델로 1회 폴백
+      const alt = (FAILOVER_CHAIN[CFG.SUMMARY_MODEL] || [])[0] || CFG.SUMMARY_MODEL;
+      summary = await upstreamChat(alt, SUMMARIZER_SYSTEM, body);
     } catch {
       // 실패 강등: 결정론 절단 마커 (세션 생존 우선, REQUIREMENTS 실패 모드 정책)
       // 강등 마커는 절대 캐시하지 않는다 — 캐시하면 요약 실패가 영구 오염된다 (SG-001)
@@ -374,25 +418,89 @@ async function handleChat(req, res) {
     stats.passthrough += 1;
   }
 
-  let upstreamRes;
-  try {
-    upstreamRes = await fetch(`${CFG.UPSTREAM}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(outBody),
-    });
-  } catch (e) {
+  // SR12: 폴백 루프 — 첫 모델이 한도/쿨다운이면 체인 순서로 갈아탄다.
+  const baseModel = outBody.model;
+  const attempts = [baseModel, ...(FAILOVER_CHAIN[baseModel] || [])];
+  let upstreamRes = null;
+  let usedModel = baseModel;
+  let fail = { reason: "", resetSeconds: 0 };
+  for (let i = 0; i < attempts.length; i += 1) {
+    const m = attempts[i];
+    const attemptBody = m === baseModel ? outBody : { ...outBody, model: m };
+    let r;
+    try {
+      r = await fetch(`${upstreamFor(m)}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(attemptBody),
+      });
+    } catch (e) {
+      fail = { reason: `unreachable: ${e.message}`.slice(0, 80), resetSeconds: 0 };
+      continue;
+    }
+    if (r.ok) {
+      upstreamRes = r;
+      usedModel = m;
+      break;
+    }
+    const txt = await r.text();
+    const last = i === attempts.length - 1;
+    if (!shouldFailover(r.status, txt) || last) {
+      // 폴백 대상이 아닌 에러거나 체인 소진: 에러를 그대로 반환
+      res.writeHead(r.status, { "content-type": r.headers.get("content-type") || "application/json" });
+      res.end(txt);
+      logLine({ path: "/v1/chat/completions", model: body.model, virtual: isVirtual, compacted: Boolean(meta), attempted: attempts.slice(0, i + 1), status: r.status, ms: Date.now() - t0 });
+      return;
+    }
+    const p = parseFailReason(txt);
+    fail = { reason: `${m}: ${p.reason}`, resetSeconds: p.resetSeconds };
+  }
+  if (!upstreamRes) {
     res.writeHead(502, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { message: `solgate upstream unreachable: ${e.message}` } }));
+    res.end(JSON.stringify({ error: { message: `solgate: all upstreams failed (${fail.reason})` } }));
     return;
   }
-  await pipeUpstream(res, upstreamRes);
+
+  const fellBack = usedModel !== baseModel;
+  if (!fellBack) {
+    await pipeUpstream(res, upstreamRes);
+  } else {
+    // 폴백 문구 주입 — 사용자 대화에 어떤 모델로 대체됐는지 반드시 보이게 한다.
+    stats.fallbacks += 1;
+    const notice = fallbackNotice(baseModel, usedModel, fail.reason, fail.resetSeconds);
+    if (outBody.stream) {
+      const headers = {};
+      for (const [k, v] of upstreamRes.headers) {
+        if (["content-length", "transfer-encoding", "connection"].includes(k)) continue;
+        headers[k] = v;
+      }
+      res.writeHead(200, headers);
+      const chunk = {
+        id: "solgate-fallback",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: usedModel,
+        choices: [{ index: 0, delta: { content: notice }, finish_reason: null }],
+      };
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      Readable.fromWeb(upstreamRes.body).pipe(res);
+    } else {
+      const data = await upstreamRes.json();
+      const msg = data?.choices?.[0]?.message;
+      if (msg) msg.content = notice + (msg.content || "");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(data));
+    }
+  }
   logLine({
     path: "/v1/chat/completions",
     model: body.model,
     virtual: isVirtual,
     compacted: Boolean(meta),
     ...(meta || {}),
+    usedModel,
+    fellBack,
+    fallbackReason: fellBack ? fail.reason : undefined,
     status: upstreamRes.status,
     ms: Date.now() - t0,
   });

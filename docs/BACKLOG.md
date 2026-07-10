@@ -113,3 +113,33 @@
 
 - [ ] 한도 리셋 후 `vgpt luna` 실 PONG 확인 (auth는 이미 증명됨)
 - [ ] VibeProxy가 7.2.58+ 엔진을 내장하면 사이드카 제거(custom-router SIDECAR_MODELS 주석 참조)
+
+---
+
+## 2026-07-10 (세션 3) — 쿼터 자동 폴백 + 폴백 문구 노출 (SR12)
+
+### 니즈 확인
+
+사용자 니즈 5겹 정리(최신 모델 즉시 접근 / 세션 불사 / 자가 소유 인프라 / 리던던시·폴백 /
+영속 기록) 후, 미충족 항목 "한도 자동 폴백"을 지목 → 사용자 확정: **폴백이 되면
+어떤 모델로 폴백됐다는 문구가 반드시 떠야 함**.
+
+### 구현
+
+- solgate에 SR12 폴백 루프: 429·usage_limit_reached·model_cooldown·auth_unavailable →
+  체인(sol→terra→luna / terra→luna→sol / luna→terra→sol)으로 재시도.
+  성공 시 응답 첫머리에 `[solgate fallback] <from> → <to> (사유, 리셋 ~HH:MM)` 주입
+  (stream=합성 첫 SSE 청크, non-stream=content 앞단). 폴백 비대상 에러는 원문 그대로.
+- gpt-5.6 물리 3종 라우팅을 solgate 경유로 승격(CCR SOLGATE_FAILOVER), cpapside
+  provider 제거 — luna upstream은 solgate 내부 상수(UPSTREAM_LUNA=:8331)로 이동(SR13).
+- 요약 사이드콜도 체인 1회 폴백(terra 실패 시 luna).
+
+### 증거
+
+- 모킹 게이트 5/5 (실 토큰 0): non-stream 문구 주입 + 사유 포함 + 실응답 보존 /
+  stream 첫 청크 문구 / 비폴백 시 문구 없음 / stats.fallbacks 증가 / 정상 모델 무간섭.
+- 라이브 체인 순회: 전 모델 한도 상태에서 sol 요청 →
+  로그 `attempted: ['gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna']` 후 최종 429 원문 반환(정답 동작).
+- unit_gate PASS / wiring_gate PASS (라우팅 5케이스: sol-1m 500k 유지, 물리 3종 solgate,
+  sol 350k → gemini 우회).
+- 한도 리셋(+120s) 시점에 자동 검증 백그라운드 잡 예약(3모델 PONG + 마스터 게이트 SKIP_BIG).

@@ -12,16 +12,26 @@ providers = {p['name']: p for p in cfg.get('Providers', cfg.get('providers', [])
 sg = providers.get('solgate')
 assert sg, 'solgate provider missing'
 assert '8321' in sg['api_base_url'], 'solgate provider not on 8321'
-assert 'gpt-5.6-sol-1m' in sg['models'], 'virtual model not in provider models'
+for m in ('gpt-5.6-sol-1m','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'):
+    assert m in sg['models'], f'{m} not in provider models'
 " 2>/dev/null || { echo "FAIL: CCR config solgate provider"; RC=1; }
 
 node -e '
 const router = require(process.env.HOME + "/.claude-code-router/custom-router.js");
 (async () => {
-  const r = await router({ body: { model: "gpt-5.6-sol-1m" }, tokenCount: 500000 });
-  if (r !== "solgate,gpt-5.6-sol-1m") { console.error("route:", r); process.exit(1); }
+  const checks = [
+    ["gpt-5.6-sol-1m", 500000, "solgate,gpt-5.6-sol-1m"],
+    ["gpt-5.6-sol", 100000, "solgate,gpt-5.6-sol"],
+    ["gpt-5.6-terra", 100000, "solgate,gpt-5.6-terra"],
+    ["gpt-5.6-luna", 100000, "solgate,gpt-5.6-luna"],
+    ["gpt-5.6-sol", 350000, "vibeproxy,gemini-3-flash"],
+  ];
+  for (const [m, tok, want] of checks) {
+    const r = await router({ body: { model: m }, tokenCount: tok });
+    if (r !== want) { console.error(`route ${m}@${tok}: got ${r}, want ${want}`); process.exit(1); }
+  }
 })();
-' 2>/dev/null || { echo "FAIL: custom-router gpt-5.6-sol-1m mapping (500k must stay on solgate)"; RC=1; }
+' 2>/dev/null || { echo "FAIL: custom-router gpt-5.6 routing table"; RC=1; }
 
 if ! grep -q 'gpt-5.6-sol-1m' "$HOME/.zshrc"; then
   echo "FAIL: zshrc vgpt1m not wired to gpt-5.6-sol-1m"

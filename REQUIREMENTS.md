@@ -33,6 +33,8 @@ Claude Code(vgpt1m, 라벨 [1m])
 | SR9 | 127.0.0.1 바인드 전용 + launchd 상주(`com.voidlight.solgate`) | service_gate.sh |
 | SR10 | 토큰 추정은 CJK 인식(한글≈1tok/char, 기타≈1/3.6) — 한국어 과소추정으로 천장 초과 금지 | unit_gate.sh |
 | SR11 | CCR provider `solgate` + zshrc `vgpt1m` → `gpt-5.6-sol-1m[1m]` 배선 | wiring_gate.sh |
+| SR12 | 쿼터/한도 자동 폴백: 429·usage_limit_reached·model_cooldown·auth_unavailable 시 체인(sol→terra→luna 등)으로 갈아타고, 응답 첫머리에 `[solgate fallback] <from> → <to> (사유, 리셋시각)` 문구 주입(stream/non-stream 모두). 폴백 불가 에러는 그대로 반환. gpt-5.6 물리 3종도 solgate 경유 | unit_gate.sh(tests/fallback.e2e.test.mjs, mock) + wiring_gate.sh |
+| SR13 | luna upstream = cpap-sidecar(:8331, CLIProxyAPI 7.2.58) — VibeProxy 내장 7.2.54 luna auth 버그(SG-001b) 우회. 엔진 갱신 시 `SOLGATE_UPSTREAM_LUNA`만 8317로 회수 | service 실측 + FAILURE_LOG |
 
 ## 상수 (server.mjs 상단, env 오버라이드 가능)
 
