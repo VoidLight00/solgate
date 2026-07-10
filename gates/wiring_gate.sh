@@ -38,5 +38,15 @@ if ! grep -q 'gpt-5.6-sol-1m' "$HOME/.zshrc"; then
   RC=1
 fi
 
+# 서브에이전트 티어 별칭 배선 (opus=sol / sonnet=terra / haiku=luna) — zshrc·vclaude-proxy 양쪽
+for f in "$HOME/.zshrc" "$HOME/.local/bin/vclaude-proxy"; do
+  for pair in 'ANTHROPIC_DEFAULT_OPUS_MODEL="gpt-5.6-sol' 'ANTHROPIC_DEFAULT_SONNET_MODEL="gpt-5.6-terra' 'ANTHROPIC_DEFAULT_HAIKU_MODEL="gpt-5.6-luna'; do
+    if ! grep -q "$pair" "$f"; then
+      echo "FAIL: subagent tier env missing in $f ($pair)"
+      RC=1
+    fi
+  done
+done
+
 [ "$RC" -eq 0 ] && echo "wiring_gate PASS"
 exit "$RC"

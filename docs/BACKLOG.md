@@ -143,3 +143,34 @@
 - unit_gate PASS / wiring_gate PASS (라우팅 5케이스: sol-1m 500k 유지, 물리 3종 solgate,
   sol 350k → gemini 우회).
 - 한도 리셋(+120s) 시점에 자동 검증 백그라운드 잡 예약(3모델 PONG + 마스터 게이트 SKIP_BIG).
+
+### 리셋 후 자동 검증 결과 (11:45, 백그라운드 잡)
+
+- `PONG-gpt-5.6-sol` / `PONG-gpt-5.6-terra` / **`PONG-gpt-5.6-luna`** — 3모델 전부
+  CCR 풀체인 실응답. luna 최종 증명 완료(sidecar 경유).
+- 마스터 게이트 `VERIFY PASS` (e2e_compact만 SKIP_BIG 명시 스킵 — 한도 재소진 방지).
+
+---
+
+## 2026-07-10 (세션 4) — 서브에이전트 모델 티어 (vgpt 안에서 terra/luna 호출)
+
+### 니즈
+
+vgpt(sol) 세션에서 서브에이전트(Agent/Workflow)가 terra·luna 등 다른 GPT 모델을
+쓸 수 있어야 함 — 메인은 sol, 워커는 가볍게.
+
+### 구현
+
+Claude Code 모델 별칭 슬롯(env) 매핑 — `vgpt`/`vgpt1m` (zshrc + vclaude-proxy 4곳):
+- `model:"opus"` → `gpt-5.6-sol[330k]` (최상위 판단)
+- `model:"sonnet"` → `gpt-5.6-terra[330k]` (범용 워커)
+- `model:"haiku"` → `gpt-5.6-luna[330k]` (경량/백그라운드, ANTHROPIC_SMALL_FAST_MODEL 포함)
+메인 모델은 `--model` 명시 고정이라 영향 없음. 별칭 요청도 CCR→solgate라 SR12 폴백 적용.
+
+### 증거
+
+- 실제 Claude Code 비대화 세션에서 별칭 해석 실측:
+  `claude --model haiku -p` → `TIER-HAIKU-OK` + solgate 로그 `model: gpt-5.6-luna, status: 200`
+  `claude --model opus -p` → `TIER-OPUS-OK` + solgate 로그 `model: gpt-5.6-sol, status: 200`
+- wiring_gate에 티어 env 배선 검사 추가(zshrc·vclaude-proxy 양쪽 grep) → PASS.
+- 신규 셸부터 적용 (기존 셸은 `source ~/.zshrc`).
