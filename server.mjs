@@ -22,6 +22,12 @@ export const CFG = {
   COMPACT_TRIGGER: Number(process.env.SOLGATE_COMPACT_TRIGGER || 300_000),
   KEEP_RECENT: Number(process.env.SOLGATE_KEEP_RECENT || 200_000),
   CHUNK_TOKENS: Number(process.env.SOLGATE_CHUNK_TOKENS || 40_000),
+  // SG-003: ctx 재시도는 "직전에 실제로 보낸 추정치"를 기준으로 줄인다. 추정 오차는
+  // 페이로드 밀도에 따라 흔들려 고정 배수 1회로는 못 잡으므로 점진 축소한다.
+  // 축소 하한은 MAX_RETRIES 가 구조적으로 준다 (0.7^3 ≈ 34%) — 별도 절대 바닥값은
+  // 스케일마다 의미가 달라져 두지 않는다.
+  CTX_RETRY_SHRINK: Number(process.env.SOLGATE_CTX_RETRY_SHRINK || 0.7),
+  CTX_MAX_RETRIES: Number(process.env.SOLGATE_CTX_MAX_RETRIES || 3),
   // luna는 cli-proxy-api 7.2.54에서 auth_unavailable (FAILURE_LOG SG-001) — terra 사용
   SUMMARY_MODEL: process.env.SOLGATE_SUMMARY_MODEL || "gpt-5.6-terra",
   SUMMARY_BUDGET: Number(process.env.SOLGATE_SUMMARY_BUDGET || 60_000),
@@ -37,6 +43,7 @@ export const stats = {
   cacheMisses: 0,
   degraded: 0,
   fallbacks: 0,
+  ctxRetries: 0,
 };
 
 // ---------- 쿼터/한도 자동 폴백 (SR12) ----------
@@ -177,9 +184,12 @@ export function planCompaction(messages, cfg = CFG) {
 
 // SR5: 어떤 경로로도 HARD_CEILING 초과 전송 금지. 재조립 후에도 넘치면
 // recent 앞쪽을 user 경계 단위로 결정론 절단한다.
+// user 경계가 더 없어도 fail-closed: 큰 메시지 본문을 절단하고(역할·tool 쌍 유지),
+// 그래도 넘치면 앞에서 통 절단한다 (2026-07-12 context_too_large 400 사고, FAILURE_LOG SG-002).
 export function enforceCeiling(systems, recapMsgs, recent, cfg = CFG) {
   let kept = recent.slice();
   let dropped = 0;
+  let truncated = 0;
   const est = () => totalTokens([...systems, ...recapMsgs, ...kept]);
   while (est() > cfg.HARD_CEILING && kept.length > 1) {
     let next = 1;
@@ -188,7 +198,25 @@ export function enforceCeiling(systems, recapMsgs, recent, cfg = CFG) {
     dropped += next;
     kept = kept.slice(next);
   }
-  return { kept, dropped, finalEst: est() };
+  const FLOOR = 2000; // 절단 후 메시지당 잔여 추정 토큰
+  for (let i = 0; i < kept.length && est() > cfg.HARD_CEILING; i += 1) {
+    const text = contentText(kept[i].content);
+    const tok = estimateTokens(text);
+    if (tok <= FLOOR) continue;
+    const cut = Math.max(1, Math.floor((text.length * FLOOR) / tok)); // CJK 비율 보존 절단
+    kept[i] = {
+      ...kept[i],
+      content: text.slice(0, cut) + "\n[solgate: message truncated to fit real context window]",
+    };
+    truncated += 1;
+  }
+  // ponytail: 최후 수단 — tool 쌍이 깨질 수 있으나 400 확정보다 낫다. 실측상 truncation에서 끝난다.
+  while (est() > cfg.HARD_CEILING && kept.length > 1) {
+    kept = kept.slice(1);
+    while (kept.length > 1 && kept[0].role === "tool") kept = kept.slice(1);
+    dropped += 1;
+  }
+  return { kept, dropped, truncated, finalEst: est() };
 }
 
 // ---------- 요약 캐시 (SR6) ----------
@@ -294,13 +322,13 @@ async function summarizeChunk(chunk) {
   return summary;
 }
 
-export async function compactBody(body) {
+export async function compactBody(body, baseCfg = CFG) {
   // tools 정의도 실창을 먹는다 — 트리거/천장에서 차감해 마진을 보존한다.
   const toolsTok = body.tools ? estimateTokens(JSON.stringify(body.tools)) : 0;
   const cfg = {
-    ...CFG,
-    COMPACT_TRIGGER: CFG.COMPACT_TRIGGER - toolsTok,
-    HARD_CEILING: CFG.HARD_CEILING - toolsTok,
+    ...baseCfg,
+    COMPACT_TRIGGER: baseCfg.COMPACT_TRIGGER - toolsTok,
+    HARD_CEILING: baseCfg.HARD_CEILING - toolsTok,
   };
   const plan = planCompaction(body.messages, cfg);
   if (!plan) {
@@ -348,7 +376,7 @@ export async function compactBody(body) {
     { role: "assistant", content: "Understood. I have the condensed earlier context and the verbatim recent history. Continuing." },
   ];
 
-  const { kept, dropped, finalEst } = enforceCeiling(plan.systems, recapMsgs, plan.recent, cfg);
+  const { kept, dropped, truncated, finalEst } = enforceCeiling(plan.systems, recapMsgs, plan.recent, cfg);
   const newBody = { ...body, messages: [...plan.systems, ...recapMsgs, ...kept] };
   return {
     body: newBody,
@@ -358,6 +386,7 @@ export async function compactBody(body) {
       finalEst,
       chunks: chunks.length,
       droppedRecent: dropped,
+      truncatedRecent: truncated,
     },
   };
 }
@@ -424,6 +453,7 @@ async function handleChat(req, res) {
   let upstreamRes = null;
   let usedModel = baseModel;
   let fail = { reason: "", resetSeconds: 0 };
+  let ctxRetries = 0;
   for (let i = 0; i < attempts.length; i += 1) {
     const m = attempts[i];
     const attemptBody = m === baseModel ? outBody : { ...outBody, model: m };
@@ -446,10 +476,36 @@ async function handleChat(req, res) {
     const txt = await r.text();
     const last = i === attempts.length - 1;
     if (!shouldFailover(r.status, txt) || last) {
+      // SR5 폐루프: 추정 오차/절단 불가로 실창을 넘었으면 재압축 후 재시도.
+      // 목표는 명목 천장이 아니라 "직전에 실제로 보낸 finalEst" 기준으로 낮춘다.
+      // 명목 기준(HARD_CEILING*0.8)으로 낮추면 finalEst가 이미 그 아래일 때 재압축이
+      // no-op이 되어 같은 body를 재전송하고 같은 400을 받는다 (FAILURE_LOG SG-003).
+      // 요약 청크는 캐시 히트라 재압축 비용은 경계 재계산뿐이다.
+      if (isVirtual && r.status === 400 && /context_too_large/.test(txt) && Array.isArray(body.messages)) {
+        const sent = meta?.finalEst ?? CFG.HARD_CEILING;
+        const target = Math.floor(sent * CFG.CTX_RETRY_SHRINK);
+        if (ctxRetries < CFG.CTX_MAX_RETRIES) {
+          const shrunk = await compactBody({ ...body, model: CFG.UPSTREAM_MODEL }, {
+            ...CFG,
+            COMPACT_TRIGGER: Math.floor(target * 0.9),
+            HARD_CEILING: target,
+            KEEP_RECENT: Math.min(CFG.KEEP_RECENT, Math.floor(target * 0.6)),
+          });
+          // 진전이 없으면(재압축 불가/동일 크기) 재시도는 같은 400을 반복할 뿐이다 — 에러를 노출한다.
+          if (shrunk.meta && shrunk.meta.finalEst < sent) {
+            ctxRetries += 1;
+            stats.ctxRetries += 1;
+            outBody = shrunk.body;
+            meta = { ...shrunk.meta, ctxRetry: ctxRetries };
+            i = -1; // 체인 처음부터 재시도
+            continue;
+          }
+        }
+      }
       // 폴백 대상이 아닌 에러거나 체인 소진: 에러를 그대로 반환
       res.writeHead(r.status, { "content-type": r.headers.get("content-type") || "application/json" });
       res.end(txt);
-      logLine({ path: "/v1/chat/completions", model: body.model, virtual: isVirtual, compacted: Boolean(meta), attempted: attempts.slice(0, i + 1), status: r.status, ms: Date.now() - t0 });
+      logLine({ path: "/v1/chat/completions", model: body.model, virtual: isVirtual, compacted: Boolean(meta), ...(meta || {}), attempted: attempts.slice(0, i + 1), status: r.status, ms: Date.now() - t0 });
       return;
     }
     const p = parseFailReason(txt);
