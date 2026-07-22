@@ -49,7 +49,7 @@ vgpt luna1m      # gpt-5.6-luna-1m[1m] — luna 기반 가상 1M
 vgpt models       # 도움말
 ```
 
-세션 중 전환은 `/model solgate,gpt-5.6-terra-1m[1m]` 또는 물리 모델의 `/model solgate,gpt-5.6-terra[330k]` 형식으로 한다. 서브에이전트는 기존처럼 `model: "opus" | "sonnet" | "haiku"` 물리 티어를 사용한다. 상태 확인:
+세션 중 전환은 `/model` picker에서 Sol 1M(Opus), Terra 1M(Sonnet), Luna 1M(Haiku)을 선택하거나 `/model solgate,gpt-5.6-terra-1m[1m]`처럼 직접 지정한다. `vgpt` 세션의 picker는 기존 물리 `[330k]` 티어를 유지하고, `vgpt1m` 세션만 세 virtual `[1m]` 티어를 보여준다. 상태 확인:
 
 ```bash
 curl http://127.0.0.1:8321/solgate/stats

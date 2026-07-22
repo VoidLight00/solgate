@@ -39,5 +39,27 @@ printf '%s' "$out" | grep -q 'gpt-5.6-terra-1m' || { echo "FAIL: terra1m model r
 printf '%s' "$out" | grep -q 'gpt-5.6-luna-1m' || { echo "FAIL: luna1m model resolution"; RC=1; }
 printf '%s' "$out" | grep -q '1m' || { echo "FAIL: virtual cap resolution"; RC=1; }
 
+# /model picker env: physical vgpt와 virtual vgpt1m 슬롯을 혼합하지 않는다.
+picker_out="$(SOLGATE_ROOT="$ROOT" zsh -c '
+  claude() {
+    print -r -- "MAIN=$ANTHROPIC_MODEL"
+    print -r -- "ARG=$2"
+    print -r -- "OPUS=$ANTHROPIC_DEFAULT_OPUS_MODEL"
+    print -r -- "SONNET=$ANTHROPIC_DEFAULT_SONNET_MODEL"
+    print -r -- "HAIKU=$ANTHROPIC_DEFAULT_HAIKU_MODEL"
+  }
+  source "$SOLGATE_ROOT/install/solgate.zsh"
+  vgpt1m
+' 2>/dev/null)"
+for want in \
+  'MAIN=solgate,gpt-5.6-sol-1m[1m]' \
+  'ARG=solgate,gpt-5.6-sol-1m[1m]' \
+  'OPUS=solgate,gpt-5.6-sol-1m[1m]' \
+  'SONNET=solgate,gpt-5.6-terra-1m[1m]' \
+  'HAIKU=solgate,gpt-5.6-luna-1m[1m]'; do
+  printf '%s\n' "$picker_out" | grep -Fq "$want" || { echo "FAIL: vgpt1m picker env missing: $want"; RC=1; }
+done
+printf '%s\n' "$picker_out" | grep -Fq '[330k][1m]' && { echo "FAIL: vgpt1m duplicated cap label"; RC=1; }
+
 [ "$RC" -eq 0 ] && echo "install_gate PASS"
 exit "$RC"

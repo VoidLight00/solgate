@@ -11,6 +11,8 @@
 - `/v1/models` 3종 1M 중복 방지 및 CCR 6모델 배선
 
 ### Changed
+- `vgpt1m`의 `/model` Opus/Sonnet/Haiku 슬롯을 각각 Sol/Terra/Luna virtual 1M profile로 배선하고 물리 `[330k]` picker와 분리
+- 모델 문자열에 `solgate,` provider prefix와 단일 `[1m]` cap을 사용해 Default의 `[330k][1m]` 이중 라벨 제거
 - rolling compression, fail-closed ceiling, context retry를 sol/terra/luna 1M profile 공통 엔진으로 일반화
 - summary sidecall을 base self-call과 virtual recursion이 불가능한 profile별 후보 정책으로 변경
 - `gpt-5.6-sol-1m`과 `vgpt1m` 기존 진입점은 호환 유지

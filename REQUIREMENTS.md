@@ -31,7 +31,7 @@ Claude Code(sol-1m / terra-1m / luna-1m, 라벨 [1m])
 | SR8 | 로그(`~/.solgate/logs`)에 대화 원문 저장 금지 — 메타데이터(추정치·청크수·캐시히트·상태코드)만 | unit_gate.sh(grep) + secrets_gate.sh |
 | SR9 | 127.0.0.1 바인드 전용 + launchd 상주(`com.solgate.gateway`) | service_gate.sh |
 | SR10 | 토큰 추정은 CJK 인식(한글≈1tok/char, 기타≈1/3.6) — 한국어 과소추정으로 천장 초과 금지 | unit_gate.sh |
-| SR11 | CCR provider에 물리 3종+가상 3종 총 6개 모델 배선. `vgpt1m`/`vgpt 1m`은 sol-1m 호환 유지, `vgpt terra1m`, `vgpt luna1m`은 각각 해당 가상 profile의 `[1m]` 라벨로 실행 | wiring_gate.sh + install_gate.sh |
+| SR11 | CCR provider에 물리 3종+가상 3종 총 6개 모델 배선. `vgpt` picker는 물리 sol/terra/luna `[330k]`, `vgpt1m` picker의 Opus/Sonnet/Haiku 슬롯은 각각 sol-1m/terra-1m/luna-1m `[1m]`. `vgpt1m`/`vgpt 1m`은 sol-1m 호환 유지 | wiring_gate.sh + install_gate.sh |
 | SR12 | 쿼터/한도 자동 폴백: 429·usage_limit_reached·model_cooldown·auth_unavailable 시 sol은 terra→luna, luna는 terra→sol 순으로 전환하고 응답 첫머리에 `[solgate fallback] <from> → <to> (사유, 리셋시각)` 문구를 주입(stream/non-stream 모두). 명시적 worker route인 terra는 sticky라 다른 모델로 자동 전환하지 않는다. 폴백 불가 에러는 그대로 반환. gpt-5.6 물리 3종도 solgate 경유 | unit_gate.sh(tests/fallback.e2e.test.mjs, mock) + wiring_gate.sh |
 | SR13 | luna upstream은 기본적으로 주 업스트림을 사용한다. 구버전 엔진의 luna `auth_unavailable` 버그가 감지될 때만 setup이 검증된 CLIProxyAPI 사이드카(:8331)를 설치하고 `SOLGATE_UPSTREAM_LUNA`로 분리한다. 주 엔진이 수정되면 별도 사이드카 없이 자동 설치 | install_gate.sh + service_gate.sh |
 

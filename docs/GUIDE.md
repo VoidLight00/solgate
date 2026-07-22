@@ -77,6 +77,8 @@ vgpt luna1m      # gpt-5.6-luna-1m[1m] — luna 기반 가상 1M
 
 세 profile 모두 300k 초과분 rolling compression, 330k fail-closed ceiling, 실제 전송 추정치 기준 최대 3회 context retry를 공유한다. summary 요청에는 자기 base와 `*-1m` virtual ID를 사용하지 않는다.
 
+`vgpt1m`으로 시작하면 Claude Code `/model`의 Opus/Sonnet/Haiku 슬롯이 각각 Sol 1M/Terra 1M/Luna 1M `[1m]`으로 표시된다. 반대로 `vgpt`는 기존 물리 3종 `[330k]` 슬롯을 유지한다. 메인 모델과 각 슬롯은 `solgate,` provider prefix를 사용하므로 custom router 없이도 동일하게 동작한다.
+
 ### 서브에이전트 티어 (Agent/Workflow)
 
 vgpt/vgpt1m 세션 안에서 별칭이 다음으로 풀린다:
