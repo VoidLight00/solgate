@@ -5,9 +5,9 @@ ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 PORT="${SOLGATE_PORT:-8321}"
 RC=0
 
-# SR9a: launchd 등록
-if ! launchctl list 2>/dev/null | grep -q "com.voidlight.solgate"; then
-  echo "FAIL: launchd job com.voidlight.solgate not loaded"
+# SR9a: launchd 등록. 공개 installer label 또는 초기 개발판 legacy label을 허용한다.
+if ! launchctl list 2>/dev/null | grep -Eq "com\.solgate\.gateway|com\.voidlight\.solgate"; then
+  echo "FAIL: launchd job com.solgate.gateway not loaded"
   RC=1
 fi
 

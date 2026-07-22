@@ -5,23 +5,25 @@ on:
   pull_request:
     branches: ["main"]
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze JavaScript
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
+      actions: read
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        # 프로젝트 언어에 맞게 조정: javascript-typescript / python / go / ruby / java-kotlin / c-cpp
-        language: ["javascript-typescript"]
+      security-events: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: github/codeql-action/init@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 # v3
         with:
-          languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@3b0bd1d116c0bde30213346b22d4f634d96a2fb0 # v3
+        with:
+          category: "/language:javascript-typescript"

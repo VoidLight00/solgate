@@ -29,6 +29,10 @@ function mockUpstream() {
         res.writeHead(429, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", resets_in_seconds: 3600 } }));
       }
+      if (body.model === "gpt-5.6-terra" && body.messages?.[0]?.content === "force-terra-limit") {
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { type: "model_cooldown", message: "Terra is cooling down", resets_in_seconds: 120 } }));
+      }
       if (body.stream) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(`data: ${JSON.stringify({ object: "chat.completion.chunk", model: body.model, choices: [{ index: 0, delta: { role: "assistant", content: "STREAM-OK" } }] })}\n\n`);
@@ -98,6 +102,13 @@ test("SR12: stream에서도 첫 청크에 폴백 문구", async () => {
   const firstData = text.split("\n\n")[0];
   assert.ok(firstData.includes("[solgate fallback] gpt-5.6-sol"), `first chunk: ${firstData.slice(0, 120)}`);
   assert.ok(text.includes("STREAM-OK"), "업스트림 스트림 보존");
+});
+
+test("SR12: terra는 sticky — 한도 오류를 다른 모델로 숨기지 않음", async () => {
+  const r = await chat({ model: "gpt-5.6-terra", messages: [{ role: "user", content: "force-terra-limit" }] });
+  assert.equal(r.status, 429);
+  const d = await r.json();
+  assert.equal(d.error.type, "model_cooldown");
 });
 
 test("SR12: 폴백 불필요 시 문구 없음 (terra 직행)", async () => {

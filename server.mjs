@@ -10,11 +10,13 @@ import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
 
+const DEFAULT_UPSTREAM = process.env.SOLGATE_UPSTREAM || "http://127.0.0.1:8317";
+
 export const CFG = {
   PORT: Number(process.env.SOLGATE_PORT || 8321),
-  UPSTREAM: process.env.SOLGATE_UPSTREAM || "http://127.0.0.1:8317",
-  // luna는 VibeProxy 내장 7.2.54 버그(SG-001b)로 cpap-sidecar(7.2.58) 경유
-  UPSTREAM_LUNA: process.env.SOLGATE_UPSTREAM_LUNA || "http://127.0.0.1:8331",
+  UPSTREAM: DEFAULT_UPSTREAM,
+  // setup.sh가 luna auth 버그를 검출했을 때만 별도 sidecar URL을 주입한다.
+  UPSTREAM_LUNA: process.env.SOLGATE_UPSTREAM_LUNA || DEFAULT_UPSTREAM,
   UPSTREAM_MODEL: process.env.SOLGATE_UPSTREAM_MODEL || "gpt-5.6-sol",
   VIRTUAL_ID: process.env.SOLGATE_VIRTUAL_ID || "gpt-5.6-sol-1m",
   VIRTUAL_CONTEXT: 1_000_000,
@@ -47,11 +49,12 @@ export const stats = {
 };
 
 // ---------- 쿼터/한도 자동 폴백 (SR12) ----------
-// 요청 모델이 429/한도/auth 불가면 같은 체급 안에서 갈아타고,
-// 응답 첫머리에 어떤 모델로 폴백됐는지 문구를 주입한다.
+// 요청 모델이 429/한도/auth 불가면 같은 체급 안에서 갈아탄다.
+// Terra는 사용자가 지정한 sticky worker route라 실패 시 다른 모델로 바꾸지 않고
+// 오류를 그대로 노출한다. 재시도/세션 재개 역시 Terra로만 수행한다.
 export const FAILOVER_CHAIN = {
   "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna"],
-  "gpt-5.6-terra": ["gpt-5.6-luna", "gpt-5.6-sol"],
+  "gpt-5.6-terra": [],
   "gpt-5.6-luna": ["gpt-5.6-terra", "gpt-5.6-sol"],
 };
 
@@ -216,7 +219,14 @@ export function enforceCeiling(systems, recapMsgs, recent, cfg = CFG) {
     while (kept.length > 1 && kept[0].role === "tool") kept = kept.slice(1);
     dropped += 1;
   }
-  return { kept, dropped, truncated, finalEst: est() };
+  const finalEst = est();
+  return {
+    kept,
+    dropped,
+    truncated,
+    finalEst,
+    overflow: finalEst > cfg.HARD_CEILING,
+  };
 }
 
 // ---------- 요약 캐시 (SR6) ----------
@@ -325,6 +335,17 @@ async function summarizeChunk(chunk) {
 export async function compactBody(body, baseCfg = CFG) {
   // tools 정의도 실창을 먹는다 — 트리거/천장에서 차감해 마진을 보존한다.
   const toolsTok = body.tools ? estimateTokens(JSON.stringify(body.tools)) : 0;
+  if (toolsTok >= baseCfg.HARD_CEILING) {
+    return {
+      body,
+      compacted: false,
+      error: {
+        status: 400,
+        code: "context_too_large",
+        message: "solgate: tool definitions alone exceed the configured context ceiling",
+      },
+    };
+  }
   const cfg = {
     ...baseCfg,
     COMPACT_TRIGGER: baseCfg.COMPACT_TRIGGER - toolsTok,
@@ -332,8 +353,37 @@ export async function compactBody(body, baseCfg = CFG) {
   };
   const plan = planCompaction(body.messages, cfg);
   if (!plan) {
-    stats.passthrough += 1;
-    return { body, compacted: false };
+    const [systems, rest] = splitLeadingSystem(body.messages);
+    const { kept, dropped, truncated, finalEst, overflow } = enforceCeiling(systems, [], rest, cfg);
+    if (overflow) {
+      return {
+        body,
+        compacted: false,
+        error: {
+          status: 400,
+          code: "context_too_large",
+          message: "solgate: system messages and tool definitions leave insufficient context capacity",
+        },
+      };
+    }
+    const boundedBody = { ...body, messages: [...systems, ...kept] };
+    const changed = dropped > 0 || truncated > 0 || finalEst < totalTokens(body.messages);
+    if (!changed) {
+      stats.passthrough += 1;
+      return { body, compacted: false, meta: { finalEst } };
+    }
+    stats.compactions += 1;
+    return {
+      body: boundedBody,
+      compacted: true,
+      meta: {
+        totalBefore: totalTokens(body.messages),
+        finalEst,
+        chunks: 0,
+        droppedRecent: dropped,
+        truncatedRecent: truncated,
+      },
+    };
   }
   stats.compactions += 1;
 
@@ -376,7 +426,18 @@ export async function compactBody(body, baseCfg = CFG) {
     { role: "assistant", content: "Understood. I have the condensed earlier context and the verbatim recent history. Continuing." },
   ];
 
-  const { kept, dropped, truncated, finalEst } = enforceCeiling(plan.systems, recapMsgs, plan.recent, cfg);
+  const { kept, dropped, truncated, finalEst, overflow } = enforceCeiling(plan.systems, recapMsgs, plan.recent, cfg);
+  if (overflow) {
+    return {
+      body,
+      compacted: false,
+      error: {
+        status: 400,
+        code: "context_too_large",
+        message: "solgate: protected system messages exceed the remaining context capacity",
+      },
+    };
+  }
   const newBody = { ...body, messages: [...plan.systems, ...recapMsgs, ...kept] };
   return {
     body: newBody,
@@ -440,6 +501,11 @@ async function handleChat(req, res) {
     outBody = { ...body, model: CFG.UPSTREAM_MODEL };
     if (Array.isArray(outBody.messages)) {
       const result = await compactBody(outBody);
+      if (result.error) {
+        res.writeHead(result.error.status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: result.error.message, type: "invalid_request_error", code: result.error.code } }));
+        return;
+      }
       outBody = result.body;
       meta = result.meta || null;
     }

@@ -23,10 +23,14 @@ leftover="$(printf '%s' "$rendered" | grep -c '{{')"
 [ -z "$leftover" ] && leftover=0
 [ "$leftover" -gt 0 ] && { echo "FAIL: gateway tmpl has unrendered placeholders ($leftover)"; RC=1; }
 
-# doctor 실측 (read-only) — 이 머신에서 전제조건이 실제로 서 있는지
-if ! bash "$ROOT/setup.sh" doctor --no-probe >/dev/null 2>&1; then
-  echo "FAIL: setup.sh doctor --no-probe exit != 0"
-  RC=1
+# doctor 실측 (read-only)은 명시한 경우에만 실행한다. CI/배포 검증은 구조 게이트로 재현 가능해야 한다.
+if [ "${SOLGATE_INSTALL_LIVE:-0}" = "1" ]; then
+  if ! bash "$ROOT/setup.sh" doctor --no-probe >/dev/null 2>&1; then
+    echo "FAIL: setup.sh doctor --no-probe exit != 0"
+    RC=1
+  fi
+else
+  echo "install_gate: live doctor skipped (SOLGATE_INSTALL_LIVE=1 to enable)"
 fi
 
 # zshrc 함수 스모크: 함수 로드 + 모델/캡 해석

@@ -9,6 +9,7 @@ import {
   chunkMessages,
   planCompaction,
   enforceCeiling,
+  compactBody,
   chunkKey,
 } from "../server.mjs";
 
@@ -111,6 +112,75 @@ test("SR5: enforceCeiling — 재조립이 천장을 넘으면 user 경계 단�
   assert.ok(finalEst <= CFG_TEST.HARD_CEILING, `finalEst ${finalEst} ≤ ceiling`);
   assert.ok(dropped > 0, "실제로 절단 발생");
   assert.equal(kept[0].role, "user", "절단 후에도 user 경계 시작");
+});
+
+test("SR5 fail-closed: user 경계가 없어도 천장 초과 전송 금지 — 본문 결정론 절단", () => {
+  const systems = [{ role: "system", content: filler(500) }];
+  const recap = [{ role: "user", content: filler(1000) }, { role: "assistant", content: "ok" }];
+  // user는 맨 앞 1개뿐 — 기존 코드는 여기서 break로 천장 초과 전송(2026-07-12 400 사고 재현)
+  const recent = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: filler(8000) },
+    { role: "assistant", content: filler(8000) },
+  ];
+  const { truncated, finalEst } = enforceCeiling(systems, recap, recent, CFG_TEST);
+  assert.ok(finalEst <= CFG_TEST.HARD_CEILING, `finalEst ${finalEst} ≤ ceiling ${CFG_TEST.HARD_CEILING}`);
+  assert.ok(truncated > 0, "본문 절단 발생");
+});
+
+test("SR5 fail-closed: CJK 본문도 비율 절단으로 천장 준수", () => {
+  const recent = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: "가".repeat(15000) }, // est ≈ 15000tok
+  ];
+  const { truncated, finalEst } = enforceCeiling([], [], recent, CFG_TEST);
+  assert.ok(finalEst <= CFG_TEST.HARD_CEILING, `finalEst ${finalEst} ≤ ceiling`);
+  assert.ok(truncated > 0);
+});
+
+test("SR5 integration: 압축 계획이 없어도 oversized assistant 본문은 compactBody에서 천장 준수", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    messages: [
+      { role: "system", content: "system" },
+      { role: "assistant", content: filler(15000) },
+    ],
+  };
+  const result = await compactBody(body, CFG_TEST);
+  assert.ok(result.meta.finalEst <= CFG_TEST.HARD_CEILING, `finalEst ${result.meta.finalEst} ≤ ceiling`);
+  assert.equal(result.compacted, true);
+});
+
+test("SR5 integration: tools만 천장을 넘으면 명시적 context_too_large", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    messages: [{ role: "user", content: "hi" }],
+    tools: [{ type: "function", function: { name: "huge", description: filler(15000), parameters: {} } }],
+  };
+  const result = await compactBody(body, CFG_TEST);
+  assert.equal(result.error?.code, "context_too_large");
+});
+
+test("SR5 integration: oversized leading system은 명시적 context_too_large", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    messages: [
+      { role: "system", content: filler(15000) },
+      { role: "user", content: "hi" },
+    ],
+  };
+  const result = await compactBody(body, CFG_TEST);
+  assert.equal(result.error?.code, "context_too_large");
+});
+
+test("SR5 integration: tools와 작은 단일 메시지 합계가 천장을 넘으면 오류", async () => {
+  const body = {
+    model: "gpt-5.6-sol",
+    messages: [{ role: "user", content: filler(3000) }],
+    tools: [{ type: "function", function: { name: "large", description: filler(9000), parameters: {} } }],
+  };
+  const result = await compactBody(body, CFG_TEST);
+  assert.equal(result.error?.code, "context_too_large");
 });
 
 test("splitLeadingSystem: 선두 system 블록 보존", () => {

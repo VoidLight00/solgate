@@ -39,7 +39,7 @@ CCR :3456 (claude-code-router, Anthropic↔OpenAI 변환 + custom-router.js 라�
 | codex CLI ≥0.144 | npm `@openai/codex` (nvm) | 백엔드가 클라이언트 버전으로 모델 게이트 — 낡으면 "requires a newer version of Codex" 400 |
 | VibeProxy 1.8.224 | /Applications (내장 cli-proxy-api-plus 7.2.54) | ChatGPT OAuth → OpenAI/Anthropic 호환 API (:8317/:8318). 모델 목록은 시작 시 원격 카탈로그(router-for-me/models) fetch — **새 모델은 앱 재시작으로 노출** |
 | cpap-sidecar | `~/.local/bin/cli-proxy-api-sidecar` (7.2.58) + launchd `com.voidlight.cpap-sidecar` :8331 | 내장 7.2.54의 luna auth 매칭 버그(SG-001b) 우회 전용. **회수 조건: VibeProxy가 7.2.58+ 내장하면 solgate의 `SOLGATE_UPSTREAM_LUNA`를 8317로 되돌리고 launchd unload** |
-| solgate | `~/projects/solgate/server.mjs` + launchd `com.voidlight.solgate` :8321 | ① 가상 1M(300k 초과분 청크 롤링 요약+캐시) ② 쿼터 자동 폴백+문구 주입 ③ luna→sidecar 업스트림 선택 |
+| solgate | `~/projects/solgate/server.mjs` + launchd `com.solgate.gateway` :8321 | ① 가상 1M(300k 초과분 청크 롤링 요약+캐시) ② 쿼터 자동 폴백+문구 주입 ③ luna→sidecar 업스트림 선택 |
 | CCR | `~/.claude-code-router/{config.json,custom-router.js}` :3456 | Anthropic↔OpenAI 변환. custom-router가 모델명→provider 결정(solgate/vibeproxy/gemini 우회) |
 | 래퍼 | `~/.zshrc` (vgpt/vgpt1m) + `~/.local/bin/vclaude-proxy` | 모델·캡 선택, 서브에이전트 티어 env, OAuth 자가치유(vgpt-auth-fix) |
 
@@ -81,15 +81,26 @@ vgpt/vgpt1m 세션 안에서 별칭이 다음으로 풀린다:
 ### 자동 폴백
 
 한도(429/usage_limit_reached/model_cooldown/auth_unavailable) 시 solgate가
-체인(sol→terra→luna, terra→luna→sol, luna→terra→sol)으로 갈아타고
-응답 첫머리에 문구를 주입한다:
+아래 정책으로 전환하고 응답 첫머리에 문구를 주입한다.
+
+| 요청 모델 | 자동 전환 순서 | 정책 |
+|---|---|---|
+| `gpt-5.6-sol` | terra → luna | 메인 세션 생존 우선 |
+| `gpt-5.6-terra` | 없음 | 명시적 worker route를 유지하는 sticky 정책 |
+| `gpt-5.6-luna` | terra → sol | 경량 작업의 완료 우선 |
 
 ```
 [solgate fallback] gpt-5.6-sol → gpt-5.6-terra (gpt-5.6-sol: usage_limit_reached, gpt-5.6-sol 리셋 ~11:42)
 ```
 
-체인 전체가 죽으면 마지막 에러를 원문 그대로 반환한다(숨기지 않음).
+체인 전체가 죽거나 terra가 실패하면 마지막 에러를 원문 그대로 반환한다(숨기지 않음).
 플랜(prolite) 사용량 한도는 sol/terra/luna 공유 — 대형 테스트 반복 실행 금지.
+
+### 컨텍스트 초과 자동 복구
+
+가상 1M 요청은 330k 이하로 압축해 보내지만, 업스트림의 실제 계산은 로컬 추정과 다를 수 있다.
+업스트림이 `context_too_large`를 반환하면 직전 전송 추정치의 70%를 새 천장으로 삼아 최대 3회 재압축한다.
+재압축 결과가 실제로 작아지지 않으면 같은 요청을 반복하지 않고 원래 400 오류를 반환한다. 재시도 횟수는 `/solgate/stats`의 `ctxRetries`에서 확인한다.
 
 ### 상태 확인
 
@@ -108,8 +119,8 @@ curl http://127.0.0.1:8331/v1/models        # sidecar 모델 목록
 VibeProxy(ChatGPT OAuth 로그인 완료). 그 다음 한 커맨드:
 
 ```bash
-git clone https://github.com/VoidLight00/solgate.git ~/projects/solgate
-cd ~/projects/solgate && ./setup.sh install
+git clone https://github.com/VoidLight00/solgate.git
+cd solgate && ./setup.sh install
 ```
 
 setup.sh가 하는 일: doctor(전제조건 fail-closed 검증) → luna auth 프로브(구엔진
@@ -128,8 +139,8 @@ PREFIX-PONG 실측). 아래는 수동 재현 절차다.
 3. **sidecar** (luna 버그가 있는 엔진일 때만): 공식 릴리스 darwin_aarch64 →
    `~/.local/bin/cli-proxy-api-sidecar`, config `~/.cli-proxy-api/sidecar-config.yaml`(port 8331,
    auth-dir 공유), launchd plist 로드
-4. **solgate**: 이 리포 clone → launchd `com.voidlight.solgate` 로드 →
-   `bash gates/verify_solgate.sh ~/projects/solgate` (평시엔 `SOLGATE_SKIP_BIG=1`)
+4. **solgate**: 이 리포 clone → launchd `com.solgate.gateway` 로드 →
+   `bash gates/verify_solgate.sh "$(pwd)"` (평시엔 `SOLGATE_SKIP_BIG=1`)
 5. **CCR**: config.json에 provider `solgate`(:8321, models 4종) 추가,
    custom-router.js에 SOLGATE_ALWAYS/SOLGATE_FAILOVER/OVERFLOW_LIMITS 반영 → `ccr restart`
 6. **래퍼**: zshrc vgpt/vgpt1m(모델 alias·캡·티어 env), vclaude-proxy 동일 반영
@@ -138,7 +149,7 @@ PREFIX-PONG 실측). 아래는 수동 재현 절차다.
 수정 파일 전체 인벤토리(백업 규칙 `*.bak-solwire-*`):
 `~/.zshrc` · `~/.local/bin/vclaude-proxy` · `~/.claude-code-router/config.json` ·
 `~/.claude-code-router/custom-router.js` · `~/.cli-proxy-api/sidecar-config.yaml` ·
-`~/Library/LaunchAgents/com.voidlight.{solgate,cpap-sidecar}.plist`
+`~/Library/LaunchAgents/com.solgate.{gateway,sidecar}.plist`
 
 ## 5. 트러블슈팅
 
@@ -150,6 +161,7 @@ PREFIX-PONG 실측). 아래는 수동 재현 절차다.
 | `model_cooldown` / `usage_limit_reached` | 플랜 사용량 한도 | 자동 폴백이 처리. 전 모델 소진이면 리셋 대기(에러에 resets_in_seconds) |
 | `no auth (providers=codex)` 전 모델 | codex 토큰 로테이션 | `~/bin/vgpt-auth-fix` (vgpt가 자동 실행) |
 | 세션이 컨텍스트 한계에서 죽음 | `[Nk]` 라벨이 실창보다 높음 | 라벨을 실창 아래로(sol 330k) — auto-compact이 먼저 발동 |
+| `no such host`인데 `nslookup`/`dig`는 정상 | macOS scoped DNS 또는 VPN/Tailscale DNS override와 시스템 resolver 불일치 | `scutil --dns`, `dscacheutil -q host -a name chatgpt.com`, `tailscale status`를 함께 비교. VPN DNS를 일시 해제해 재현 여부를 확인하고 조직 정책이 있으면 관리자와 조정 |
 | 가상 1M 요약 품질 저하 | 요약 프롬프트/청크 크기 | server.mjs `SUMMARIZER_SYSTEM`·`CHUNK_TOKENS` 튜닝, stats.degraded 확인 |
 
 ## 6. 설계 원칙 (이 방법의 뼈대)

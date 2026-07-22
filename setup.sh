@@ -32,9 +32,13 @@ done
 SOLGATE_PORT=8321
 SIDECAR_PORT=8331
 SIDECAR_VERSION="7.2.58"
+SIDECAR_SHA_ARM64="52882fab08d10882510969d3ada73dd7bcb5590831db6263849a7be987b0093b"
+SIDECAR_SHA_AMD64="6508350c2b1da5f89164849c50cf9b53c9a9f9a5cfa27cdd8806e4f3f344082d"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 GATEWAY_PLIST="$LAUNCH_DIR/com.solgate.gateway.plist"
 SIDECAR_PLIST="$LAUNCH_DIR/com.solgate.sidecar.plist"
+LEGACY_GATEWAY_PLIST="$LAUNCH_DIR/com.voidlight.solgate.plist"
+LEGACY_SIDECAR_PLIST="$LAUNCH_DIR/com.voidlight.cpap-sidecar.plist"
 ZSHRC_MARK_BEGIN="# >>> solgate >>>"
 ZSHRC_MARK_END="# <<< solgate <<<"
 
@@ -45,6 +49,20 @@ warn() { printf 'WARN %s\n' "$*"; }
 fail() { printf 'FAIL %s\n' "$*"; RC=1; }
 
 need_luna_sidecar=0
+migration_active=0
+install_complete=0
+
+rollback_legacy() {
+  [ "$migration_active" -eq 1 ] || return 0
+  [ "$install_complete" -eq 0 ] || return 0
+  launchctl unload "$GATEWAY_PLIST" 2>/dev/null || true
+  launchctl unload "$SIDECAR_PLIST" 2>/dev/null || true
+  [ -f "$LEGACY_GATEWAY_PLIST" ] && launchctl load "$LEGACY_GATEWAY_PLIST" 2>/dev/null || true
+  [ -f "$LEGACY_SIDECAR_PLIST" ] && launchctl load "$LEGACY_SIDECAR_PLIST" 2>/dev/null || true
+  warn "설치 실패로 legacy launchd 서비스를 복구했습니다"
+}
+
+trap rollback_legacy EXIT
 
 # ---------- doctor ----------
 doctor() {
@@ -84,15 +102,32 @@ doctor() {
   if [ "$NO_PROBE" -eq 1 ]; then
     warn "luna 프로브 스킵(--no-probe) — luna 실패 시 setup.sh install을 다시 실행"
   else
-    luna="$(curl -sS --max-time 30 "$UPSTREAM/v1/chat/completions" -H 'Content-Type: application/json' \
+    luna_raw="$(curl -sS --max-time 30 -w '\n%{http_code}' "$UPSTREAM/v1/chat/completions" -H 'Content-Type: application/json' \
       -d '{"model":"gpt-5.6-luna","max_tokens":8,"messages":[{"role":"user","content":"ping"}]}' 2>/dev/null)"
+    luna_status="${luna_raw##*$'\n'}"
+    luna="${luna_raw%$'\n'*}"
     if printf '%s' "$luna" | grep -q 'auth_unavailable'; then
       need_luna_sidecar=1
       warn "luna auth_unavailable — 업스트림 엔진 구버전 버그, 사이드카(CLIProxyAPI $SIDECAR_VERSION) 설치 예정"
-    elif [ -n "$luna" ]; then
+    elif [ "$luna_status" = "200" ] && printf '%s' "$luna" | node -e '
+      let raw = "";
+      process.stdin.on("data", (chunk) => { raw += chunk; });
+      process.stdin.on("end", () => {
+        try {
+          const data = JSON.parse(raw);
+          const choice = Array.isArray(data.choices) ? data.choices[0] : null;
+          const content = choice?.message?.content ?? choice?.text;
+          process.exit(typeof content === "string" && content.length > 0 ? 0 : 1);
+        } catch {
+          process.exit(1);
+        }
+      });
+    '; then
       ok "luna 업스트림 도달 (사이드카 불필요)"
+    elif [ -z "$luna" ] || [ "$luna_status" = "000" ]; then
+      fail "luna 프로브 무응답 — --no-probe로 명시적으로 건너뛰거나 업스트림을 복구하세요"
     else
-      warn "luna 프로브 무응답 — 사이드카 판정 보류(기본 미설치)"
+      fail "luna 프로브 실패(HTTP ${luna_status}) — auth/쿼터/업스트림 상태를 확인하거나 --no-probe 사용"
     fi
   fi
 
@@ -118,14 +153,33 @@ reload_job() { # $1=plist
 install_sidecar() {
   arch="$(uname -m)"
   case "$arch" in
-    arm64) asset="CLIProxyAPI_${SIDECAR_VERSION}_darwin_aarch64.tar.gz" ;;
-    x86_64) asset="CLIProxyAPI_${SIDECAR_VERSION}_darwin_amd64.tar.gz" ;;
+    arm64)
+      asset="CLIProxyAPI_${SIDECAR_VERSION}_darwin_aarch64.tar.gz"
+      expected_sha="$SIDECAR_SHA_ARM64"
+      ;;
+    x86_64)
+      asset="CLIProxyAPI_${SIDECAR_VERSION}_darwin_amd64.tar.gz"
+      expected_sha="$SIDECAR_SHA_AMD64"
+      ;;
     *) fail "지원하지 않는 아키텍처: $arch"; return 1 ;;
   esac
   url="https://github.com/router-for-me/CLIProxyAPI/releases/download/v${SIDECAR_VERSION}/${asset}"
   tmp="$(mktemp -d)"
   log "사이드카 다운로드: $url"
   curl -fsSL --max-time 120 -o "$tmp/cpap.tar.gz" "$url" || { fail "사이드카 다운로드 실패"; return 1; }
+  actual_sha="$(shasum -a 256 "$tmp/cpap.tar.gz" | cut -d ' ' -f 1)"
+  if [ "$actual_sha" != "$expected_sha" ]; then
+    rm -rf "$tmp"
+    fail "사이드카 SHA-256 불일치 — 설치 중단"
+    return 1
+  fi
+  ok "사이드카 SHA-256 검증"
+  tar_list="$(tar tzf "$tmp/cpap.tar.gz" 2>/dev/null)" || { fail "사이드카 압축 목록 검증 실패"; return 1; }
+  if printf '%s\n' "$tar_list" | grep -Eq '(^|/)\.\.(/|$)|^/'; then
+    rm -rf "$tmp"
+    fail "사이드카 압축에 안전하지 않은 경로 포함"
+    return 1
+  fi
   tar xzf "$tmp/cpap.tar.gz" -C "$tmp" || { fail "사이드카 압축해제 실패"; return 1; }
   [ -f "$tmp/cli-proxy-api" ] || { fail "사이드카 바이너리 없음(릴리스 구조 변경?)"; return 1; }
   mkdir -p "$HOME/.local/bin" "$HOME/.cli-proxy-api/logs"
@@ -148,11 +202,18 @@ do_install() {
   doctor || { log ""; log "doctor FAIL — 위 항목을 해결한 뒤 다시 실행하세요."; exit 1; }
   NODE_BIN="$(command -v node)"
 
+  # 초기 개발판의 개인 launchd label이 남아 있으면 신규 서비스를 먼저 검증한 뒤 제거한다.
+  if [ -f "$LEGACY_GATEWAY_PLIST" ] || [ -f "$LEGACY_SIDECAR_PLIST" ]; then
+    migration_active=1
+    warn "legacy launchd label 감지 — 신규 서비스 검증 후 제거합니다"
+  fi
+
   mkdir -p "$HOME/.solgate/logs" "$LAUNCH_DIR"
 
   UPSTREAM_LUNA="$UPSTREAM"
   if [ "$need_luna_sidecar" -eq 1 ]; then
-    install_sidecar && UPSTREAM_LUNA="http://127.0.0.1:${SIDECAR_PORT}"
+    install_sidecar || exit 1
+    UPSTREAM_LUNA="http://127.0.0.1:${SIDECAR_PORT}"
   fi
 
   render "$REPO_ROOT/install/com.solgate.gateway.plist.tmpl" "$GATEWAY_PLIST"
@@ -200,6 +261,28 @@ do_install() {
     fi
   fi
 
+  if [ "$need_luna_sidecar" -eq 1 ]; then
+    luna_pong="$(curl -sS --max-time 60 "http://127.0.0.1:${SOLGATE_PORT}/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d '{"model":"gpt-5.6-luna","max_tokens":20,"messages":[{"role":"user","content":"Reply with exactly: LUNA-PONG"}]}' 2>/dev/null)"
+    if printf '%s' "$luna_pong" | grep -q 'LUNA-PONG'; then
+      ok "신규 gateway 경유 luna PONG 성공"
+    elif printf '%s' "$luna_pong" | grep -q -e 'usage_limit_reached' -e 'model_cooldown'; then
+      ok "신규 gateway 경유 luna 백엔드 도달 (현재 사용량 한도)"
+    else
+      fail "신규 gateway 경유 luna 검증 실패"
+      exit 1
+    fi
+  fi
+
+  if [ "$migration_active" -eq 1 ]; then
+    launchctl unload "$LEGACY_GATEWAY_PLIST" 2>/dev/null || true
+    launchctl unload "$LEGACY_SIDECAR_PLIST" 2>/dev/null || true
+    rm -f "$LEGACY_GATEWAY_PLIST" "$LEGACY_SIDECAR_PLIST"
+    ok "legacy launchd label을 com.solgate.*로 이전"
+  fi
+  install_complete=1
+
   log ""
   log "설치 완료. 새 터미널에서:"
   log "  vgpt            # gpt-5.6-sol[330k]"
@@ -212,7 +295,9 @@ do_install() {
 do_uninstall() {
   launchctl unload "$GATEWAY_PLIST" 2>/dev/null || true
   launchctl unload "$SIDECAR_PLIST" 2>/dev/null || true
-  rm -f "$GATEWAY_PLIST" "$SIDECAR_PLIST"
+  launchctl unload "$LEGACY_GATEWAY_PLIST" 2>/dev/null || true
+  launchctl unload "$LEGACY_SIDECAR_PLIST" 2>/dev/null || true
+  rm -f "$GATEWAY_PLIST" "$SIDECAR_PLIST" "$LEGACY_GATEWAY_PLIST" "$LEGACY_SIDECAR_PLIST"
   if grep -q "$ZSHRC_MARK_BEGIN" "$HOME/.zshrc" 2>/dev/null; then
     sed -i '' "/$ZSHRC_MARK_BEGIN/,/$ZSHRC_MARK_END/d" "$HOME/.zshrc"
   fi

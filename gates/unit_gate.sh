@@ -4,7 +4,7 @@ set -u
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 RC=0
 
-out="$(cd "$ROOT" && node --test tests/unit.test.mjs tests/fallback.e2e.test.mjs 2>&1)"; rc=$?
+out="$(cd "$ROOT" && node --test tests/unit.test.mjs tests/fallback.e2e.test.mjs tests/ctxretry.e2e.test.mjs tests/ctxwindow.e2e.test.mjs 2>&1)"; rc=$?
 if [ "$rc" -ne 0 ]; then
   printf '%s\n' "$out" | tail -20
   echo "FAIL: node --test exit $rc"
