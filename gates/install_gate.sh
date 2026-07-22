@@ -34,9 +34,10 @@ else
 fi
 
 # zshrc 함수 스모크: 함수 로드 + 모델/캡 해석
-out="$(zsh -c "source '$ROOT/install/solgate.zsh'; _solgate_model_id terra; _solgate_cap_for gpt-5.6-sol-1m" 2>/dev/null)"
-printf '%s' "$out" | grep -q 'gpt-5.6-terra' || { echo "FAIL: solgate.zsh model resolution"; RC=1; }
-printf '%s' "$out" | grep -q '1m' || { echo "FAIL: solgate.zsh cap resolution"; RC=1; }
+out="$(zsh -c "source '$ROOT/install/solgate.zsh'; _solgate_model_id terra1m; _solgate_model_id luna1m; _solgate_cap_for gpt-5.6-terra-1m" 2>/dev/null)"
+printf '%s' "$out" | grep -q 'gpt-5.6-terra-1m' || { echo "FAIL: terra1m model resolution"; RC=1; }
+printf '%s' "$out" | grep -q 'gpt-5.6-luna-1m' || { echo "FAIL: luna1m model resolution"; RC=1; }
+printf '%s' "$out" | grep -q '1m' || { echo "FAIL: virtual cap resolution"; RC=1; }
 
 [ "$RC" -eq 0 ] && echo "install_gate PASS"
 exit "$RC"

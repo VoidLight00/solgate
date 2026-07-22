@@ -92,10 +92,23 @@ doctor() {
   models="$(curl -fsS --max-time 8 "$UPSTREAM/v1/models" 2>/dev/null)"
   if [ -z "$models" ]; then
     fail "업스트림($UPSTREAM) 무응답 — VibeProxy(또는 CLIProxyAPI)를 설치하고 ChatGPT OAuth 로그인하세요"
-  elif printf '%s' "$models" | grep -q 'gpt-5.6-sol'; then
-    ok "업스트림 gpt-5.6-sol 노출 확인"
+  elif printf '%s' "$models" | node -e '
+    let raw = "";
+    process.stdin.on("data", (chunk) => { raw += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const data = JSON.parse(raw);
+        const ids = new Set((data.data || []).map((model) => model.id));
+        const required = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+        process.exit(required.every((model) => ids.has(model)) ? 0 : 1);
+      } catch {
+        process.exit(1);
+      }
+    });
+  '; then
+    ok "업스트림 gpt-5.6 sol/terra/luna 3종 노출 확인"
   else
-    fail "업스트림에 gpt-5.6-sol 없음 — VibeProxy 재시작(원격 모델 카탈로그 재fetch) 후 재시도"
+    fail "업스트림에 gpt-5.6 sol/terra/luna 중 누락 — upstream 모델 카탈로그를 갱신한 뒤 재시도"
   fi
 
   # luna auth 프로브: 구엔진(<=7.2.54)의 auth_unavailable 버그 감지 → 사이드카 필요 판정
@@ -224,11 +237,15 @@ do_install() {
   else
     fail "solgate 기동 실패 — ~/.solgate/logs/launchd.err.log 확인"; exit 1
   fi
-  if curl -fsS --max-time 8 "http://127.0.0.1:${SOLGATE_PORT}/v1/models" | grep -q 'gpt-5.6-sol-1m'; then
-    ok "가상 1M 모델(gpt-5.6-sol-1m) 노출"
-  else
-    fail "가상 모델 미노출"; exit 1
-  fi
+  virtual_models="gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m"
+  exposed="$(curl -fsS --max-time 8 "http://127.0.0.1:${SOLGATE_PORT}/v1/models" 2>/dev/null)"
+  for virtual_model in $virtual_models; do
+    if ! printf '%s' "$exposed" | grep -q "\"${virtual_model}\""; then
+      fail "가상 모델 미노출: ${virtual_model}"
+      exit 1
+    fi
+  done
+  ok "가상 1M 모델 3종 노출"
 
   node "$REPO_ROOT/install/merge-ccr.mjs" --port "$SOLGATE_PORT" || exit 1
   ccr restart >/dev/null 2>&1 || warn "ccr restart 실패 — 수동으로 'ccr restart' 실행 필요"
@@ -288,7 +305,9 @@ do_install() {
   log "  vgpt            # gpt-5.6-sol[330k]"
   log "  vgpt terra      # gpt-5.6-terra[330k]"
   log "  vgpt luna       # gpt-5.6-luna[330k]"
-  log "  vgpt1m          # 가상 1M (롤링 요약)"
+  log "  vgpt1m          # sol 기반 가상 1M (롤링 요약)"
+  log "  vgpt terra1m   # terra 기반 가상 1M (sticky)"
+  log "  vgpt luna1m    # luna 기반 가상 1M"
   log "  vgpt models     # 도움말"
 }
 

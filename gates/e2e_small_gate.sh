@@ -4,15 +4,17 @@ set -u
 PORT="${SOLGATE_PORT:-8321}"
 RC=0
 
-# non-stream
-reply="$(curl -fsS --max-time 90 "http://127.0.0.1:${PORT}/v1/chat/completions" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.6-sol-1m","messages":[{"role":"user","content":"Reply with exactly: GATE-PONG"}]}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"])' 2>/dev/null)"
-if ! printf '%s' "$reply" | grep -q "GATE-PONG"; then
-  echo "FAIL: non-stream roundtrip (got: ${reply:-<empty>})"
-  RC=1
-fi
+# non-stream: 세 virtual profile이 각 physical base까지 도달하는지 확인
+for model in gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m; do
+  reply="$(curl -fsS --max-time 90 "http://127.0.0.1:${PORT}/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: GATE-PONG\"}]}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"])' 2>/dev/null)"
+  if ! printf '%s' "$reply" | grep -q "GATE-PONG"; then
+    echo "FAIL: non-stream roundtrip $model (got: ${reply:-<empty>})"
+    RC=1
+  fi
+done
 
 # stream (SSE 데이터 라인 존재)
 sse="$(curl -fsS --max-time 90 "http://127.0.0.1:${PORT}/v1/chat/completions" \

@@ -1,8 +1,8 @@
-// solgate — gpt-5.6-sol(실창 372k) 위의 가상 1M 컨텍스트 프록시.
-// Claude Code(CCR) ↔ VibeProxy 사이에서, 300k 초과 대화의 오래된 구간을
-// gpt-5.6-luna 청크 요약으로 접고 최근 ~200k는 원문 유지한다.
+// solgate — GPT-5.6 sol/terra/luna 위의 가상 1M 컨텍스트 프록시.
+// Claude Code(CCR) ↔ ChatGPT OAuth upstream 사이에서, 300k 초과 대화의 오래된
+// 구간을 물리 모델로 롤링 요약하고 최근 ~200k는 원문 유지한다.
 // 물리 창을 늘리는 게 아니라 압축 계층이다 — 오래된 턴은 요약본(무손실 아님).
-// 사양 SSoT: REQUIREMENTS.md (SR1~SR11)
+// 사양 SSoT: REQUIREMENTS.md (SR1~SR13)
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -17,8 +17,6 @@ export const CFG = {
   UPSTREAM: DEFAULT_UPSTREAM,
   // setup.sh가 luna auth 버그를 검출했을 때만 별도 sidecar URL을 주입한다.
   UPSTREAM_LUNA: process.env.SOLGATE_UPSTREAM_LUNA || DEFAULT_UPSTREAM,
-  UPSTREAM_MODEL: process.env.SOLGATE_UPSTREAM_MODEL || "gpt-5.6-sol",
-  VIRTUAL_ID: process.env.SOLGATE_VIRTUAL_ID || "gpt-5.6-sol-1m",
   VIRTUAL_CONTEXT: 1_000_000,
   HARD_CEILING: Number(process.env.SOLGATE_HARD_CEILING || 330_000),
   COMPACT_TRIGGER: Number(process.env.SOLGATE_COMPACT_TRIGGER || 300_000),
@@ -30,12 +28,34 @@ export const CFG = {
   // 스케일마다 의미가 달라져 두지 않는다.
   CTX_RETRY_SHRINK: Number(process.env.SOLGATE_CTX_RETRY_SHRINK || 0.7),
   CTX_MAX_RETRIES: Number(process.env.SOLGATE_CTX_MAX_RETRIES || 3),
-  // luna는 cli-proxy-api 7.2.54에서 auth_unavailable (FAILURE_LOG SG-001) — terra 사용
-  SUMMARY_MODEL: process.env.SOLGATE_SUMMARY_MODEL || "gpt-5.6-terra",
   SUMMARY_BUDGET: Number(process.env.SOLGATE_SUMMARY_BUDGET || 60_000),
   HOME_DIR: process.env.SOLGATE_HOME || path.join(os.homedir(), ".solgate"),
 };
 
+export const PHYSICAL_MODELS = Object.freeze([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+
+export const VIRTUAL_MODEL_PROFILES = Object.freeze({
+  "gpt-5.6-sol-1m": Object.freeze({
+    baseModel: "gpt-5.6-sol",
+    summaryCandidates: Object.freeze(["gpt-5.6-terra", "gpt-5.6-luna"]),
+  }),
+  "gpt-5.6-terra-1m": Object.freeze({
+    baseModel: "gpt-5.6-terra",
+    summaryCandidates: Object.freeze(["gpt-5.6-luna", "gpt-5.6-sol"]),
+  }),
+  "gpt-5.6-luna-1m": Object.freeze({
+    baseModel: "gpt-5.6-luna",
+    summaryCandidates: Object.freeze(["gpt-5.6-terra", "gpt-5.6-sol"]),
+  }),
+});
+
+export function virtualProfile(model) {
+  return VIRTUAL_MODEL_PROFILES[model] || null;
+}
 export const stats = {
   started: new Date().toISOString(),
   requests: 0,
@@ -304,35 +324,34 @@ async function upstreamChat(model, systemPrompt, userText) {
   return text;
 }
 
-async function summarizeChunk(chunk) {
-  const key = chunkKey(chunk, CFG.SUMMARY_MODEL);
+async function summarizeText(userText, profile, cacheSource) {
+  const policy = profile.summaryCandidates.join(",");
+  const key = chunkKey(cacheSource, `summary-v2:${policy}`);
   const hit = cacheGet(key);
   if (hit != null) {
     stats.cacheHits += 1;
     return hit;
   }
   stats.cacheMisses += 1;
-  const body = serializeChunk(chunk);
-  let summary;
-  try {
-    summary = await upstreamChat(CFG.SUMMARY_MODEL, SUMMARIZER_SYSTEM, body);
-  } catch {
+  for (const model of profile.summaryCandidates) {
+    if (!PHYSICAL_MODELS.includes(model) || model === profile.baseModel) continue;
     try {
-      // 요약 모델도 한도에 걸릴 수 있다 — 체인의 다음 모델로 1회 폴백
-      const alt = (FAILOVER_CHAIN[CFG.SUMMARY_MODEL] || [])[0] || CFG.SUMMARY_MODEL;
-      summary = await upstreamChat(alt, SUMMARIZER_SYSTEM, body);
-    } catch {
-      // 실패 강등: 결정론 절단 마커 (세션 생존 우선, REQUIREMENTS 실패 모드 정책)
-      // 강등 마커는 절대 캐시하지 않는다 — 캐시하면 요약 실패가 영구 오염된다 (SG-001)
-      stats.degraded += 1;
-      return `[earlier context unavailable: ${chunk.length} messages dropped]`;
-    }
+      const summary = await upstreamChat(model, SUMMARIZER_SYSTEM, userText);
+      cachePut(key, summary);
+      return summary;
+    } catch {}
   }
-  cachePut(key, summary);
-  return summary;
+  return null;
 }
 
-export async function compactBody(body, baseCfg = CFG) {
+async function summarizeChunk(chunk, profile) {
+  const summary = await summarizeText(serializeChunk(chunk), profile, chunk);
+  if (summary != null) return summary;
+  stats.degraded += 1;
+  return `[earlier context unavailable: ${chunk.length} messages dropped]`;
+}
+
+export async function compactBody(body, baseCfg = CFG, profile = VIRTUAL_MODEL_PROFILES["gpt-5.6-sol-1m"]) {
   // tools 정의도 실창을 먹는다 — 트리거/천장에서 차감해 마진을 보존한다.
   const toolsTok = body.tools ? estimateTokens(JSON.stringify(body.tools)) : 0;
   if (toolsTok >= baseCfg.HARD_CEILING) {
@@ -390,28 +409,17 @@ export async function compactBody(body, baseCfg = CFG) {
   const chunks = chunkMessages(plan.old, cfg.CHUNK_TOKENS);
   const summaries = [];
   for (let i = 0; i < chunks.length; i += 1) {
-    summaries.push(`### Segment ${i + 1}/${chunks.length}\n${await summarizeChunk(chunks[i])}`);
+    summaries.push(`### Segment ${i + 1}/${chunks.length}\n${await summarizeChunk(chunks[i], profile)}`);
   }
   let joined = summaries.join("\n\n");
-  if (estimateTokens(joined) > CFG.SUMMARY_BUDGET) {
-    const key = chunkKey([{ role: "meta", content: joined }], CFG.SUMMARY_MODEL);
-    const hit = cacheGet(key);
-    if (hit != null) {
-      stats.cacheHits += 1;
-      joined = hit;
-    } else {
-      stats.cacheMisses += 1;
-      try {
-        joined = await upstreamChat(
-          CFG.SUMMARY_MODEL,
-          SUMMARIZER_SYSTEM,
-          `Condense these segment digests into one digest, max 1500 words:\n\n${joined}`,
-        );
-        cachePut(key, joined);
-      } catch {
-        stats.degraded += 1; // 강등: 원본 요약 그대로 사용 (예산 초과는 ceiling 절단이 흡수)
-      }
-    }
+  if (estimateTokens(joined) > baseCfg.SUMMARY_BUDGET) {
+    const condensed = await summarizeText(
+      `Condense these segment digests into one digest, max 1500 words:\n\n${joined}`,
+      profile,
+      [{ role: "meta", content: joined }],
+    );
+    if (condensed != null) joined = condensed;
+    else stats.degraded += 1;
   }
 
   const recapMsgs = [
@@ -494,13 +502,14 @@ async function handleChat(req, res) {
     return;
   }
 
-  const isVirtual = body.model === CFG.VIRTUAL_ID;
+  const profile = virtualProfile(body.model);
+  const isVirtual = profile != null;
   let outBody = body;
   let meta = null;
-  if (isVirtual) {
-    outBody = { ...body, model: CFG.UPSTREAM_MODEL };
+  if (profile) {
+    outBody = { ...body, model: profile.baseModel };
     if (Array.isArray(outBody.messages)) {
-      const result = await compactBody(outBody);
+      const result = await compactBody(outBody, CFG, profile);
       if (result.error) {
         res.writeHead(result.error.status, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: result.error.message, type: "invalid_request_error", code: result.error.code } }));
@@ -551,12 +560,12 @@ async function handleChat(req, res) {
         const sent = meta?.finalEst ?? CFG.HARD_CEILING;
         const target = Math.floor(sent * CFG.CTX_RETRY_SHRINK);
         if (ctxRetries < CFG.CTX_MAX_RETRIES) {
-          const shrunk = await compactBody({ ...body, model: CFG.UPSTREAM_MODEL }, {
+          const shrunk = await compactBody({ ...body, model: baseModel }, {
             ...CFG,
             COMPACT_TRIGGER: Math.floor(target * 0.9),
             HARD_CEILING: target,
             KEEP_RECENT: Math.min(CFG.KEEP_RECENT, Math.floor(target * 0.6)),
-          });
+          }, profile);
           // 진전이 없으면(재압축 불가/동일 크기) 재시도는 같은 400을 반복할 뿐이다 — 에러를 노출한다.
           if (shrunk.meta && shrunk.meta.finalEst < sent) {
             ctxRetries += 1;
@@ -633,13 +642,17 @@ async function handleModels(res) {
     const up = await fetch(`${CFG.UPSTREAM}/v1/models`);
     const data = await up.json();
     data.data = data.data || [];
-    data.data.push({
-      id: CFG.VIRTUAL_ID,
-      object: "model",
-      owned_by: "solgate",
-      context_length: CFG.VIRTUAL_CONTEXT,
-      description: `Virtual 1M context over ${CFG.UPSTREAM_MODEL} (rolling summarization above ${CFG.COMPACT_TRIGGER} tokens).`,
-    });
+    const existing = new Set(data.data.map((model) => model.id));
+    for (const [id, profile] of Object.entries(VIRTUAL_MODEL_PROFILES)) {
+      if (existing.has(id)) continue;
+      data.data.push({
+        id,
+        object: "model",
+        owned_by: "solgate",
+        context_length: CFG.VIRTUAL_CONTEXT,
+        description: `Virtual 1M context over ${profile.baseModel} (rolling summarization above ${CFG.COMPACT_TRIGGER} tokens).`,
+      });
+    }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(data));
   } catch (e) {

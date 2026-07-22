@@ -16,7 +16,7 @@ CCR :3456 (claude-code-router, Anthropic↔OpenAI 변환 + custom-router.js 라�
   ├─ gpt-5.6-sol / terra / luna ──────► solgate :8321  ─┬─► VibeProxy :8317 (sol/terra)
   │   (SOLGATE_FAILOVER: 한도 시                        └─► cpap-sidecar :8331 (luna)
   │    체인 폴백 + 응답에 문구 주입)                          │
-  ├─ gpt-5.6-sol-1m ────────────────► solgate :8321        │ ChatGPT OAuth (codex provider)
+  ├─ gpt-5.6-{sol,terra,luna}-1m ─────► solgate :8321        │ ChatGPT OAuth (codex provider)
   │   (SOLGATE_ALWAYS: 300k 초과분                          ▼
   │    luna/terra 롤링 요약 = 가상 1M)                   chatgpt.com backend
   ├─ >330k 요청 ─────────────────────► vibeproxy,gemini-3-flash (장문맥 우회)
@@ -52,7 +52,9 @@ vgpt              # gpt-5.6-sol[330k] — 물리 풀컨텍스트, 품질 무손�
 vgpt terra        # gpt-5.6-terra[330k]
 vgpt luna         # gpt-5.6-luna[330k]
 vgpt gpt5.5       # 레거시 [150k]
-vgpt1m            # gpt-5.6-sol-1m[1m] — 가상 1M (300k 초과분 자동 요약)
+vgpt1m            # gpt-5.6-sol-1m[1m] — sol 기반 가상 1M
+vgpt terra1m     # gpt-5.6-terra-1m[1m] — terra 기반 가상 1M(sticky)
+vgpt luna1m      # gpt-5.6-luna-1m[1m] — luna 기반 가상 1M
 ```
 
 ### 세션 중 모델 전환 (슬래시)
@@ -64,6 +66,16 @@ vgpt1m            # gpt-5.6-sol-1m[1m] — 가상 1M (300k 초과분 자동 요�
 ```
 `/model` 피커의 슬롯도 티어 매핑됨(Opus=sol, Sonnet=terra, Haiku=luna).
 `[330k]` 라벨을 빼면 기본 200k 가정으로 돌아가므로 항상 붙인다.
+
+### 가상 1M profile
+
+| 가상 모델 | 최종 physical base | summary 후보 | main fallback |
+|---|---|---|---|
+| `gpt-5.6-sol-1m` | sol | terra → luna | terra → luna |
+| `gpt-5.6-terra-1m` | terra | luna → sol | 없음(sticky) |
+| `gpt-5.6-luna-1m` | luna | terra → sol | terra → sol |
+
+세 profile 모두 300k 초과분 rolling compression, 330k fail-closed ceiling, 실제 전송 추정치 기준 최대 3회 context retry를 공유한다. summary 요청에는 자기 base와 `*-1m` virtual ID를 사용하지 않는다.
 
 ### 서브에이전트 티어 (Agent/Workflow)
 
@@ -141,7 +153,7 @@ PREFIX-PONG 실측). 아래는 수동 재현 절차다.
    auth-dir 공유), launchd plist 로드
 4. **solgate**: 이 리포 clone → launchd `com.solgate.gateway` 로드 →
    `bash gates/verify_solgate.sh "$(pwd)"` (평시엔 `SOLGATE_SKIP_BIG=1`)
-5. **CCR**: config.json에 provider `solgate`(:8321, models 4종) 추가,
+5. **CCR**: config.json에 provider `solgate`(:8321, 물리 3종+가상 3종) 추가,
    custom-router.js에 SOLGATE_ALWAYS/SOLGATE_FAILOVER/OVERFLOW_LIMITS 반영 → `ccr restart`
 6. **래퍼**: zshrc vgpt/vgpt1m(모델 alias·캡·티어 env), vclaude-proxy 동일 반영
 7. **검증**: `bash gates/verify_solgate.sh` exit 0 + CCR 경유 3모델 PONG

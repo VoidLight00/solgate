@@ -29,11 +29,14 @@ models="$(curl -fsS --max-time 10 "http://127.0.0.1:${PORT}/v1/models" 2>/dev/nu
 if ! printf '%s' "$models" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-ids={m["id"]:m for m in d["data"]}
-v=ids.get("gpt-5.6-sol-1m")
-assert v, "virtual model missing"
-assert v.get("context_length")==1000000, "virtual context_length != 1000000"
-assert "gpt-5.6-sol" in ids, "upstream model list not preserved"
+ids=[m["id"] for m in d["data"]]
+by_id={m["id"]:m for m in d["data"]}
+for model_id in ("gpt-5.6-sol-1m","gpt-5.6-terra-1m","gpt-5.6-luna-1m"):
+    v=by_id.get(model_id)
+    assert v, f"{model_id} missing"
+    assert v.get("context_length")==1000000, f"{model_id} context_length != 1000000"
+    assert ids.count(model_id)==1, f"{model_id} duplicated"
+assert "gpt-5.6-sol" in by_id, "upstream model list not preserved"
 ' 2>/dev/null; then
   echo "FAIL: /v1/models virtual injection check"
   RC=1

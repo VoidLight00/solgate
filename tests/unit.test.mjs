@@ -11,6 +11,8 @@ import {
   enforceCeiling,
   compactBody,
   chunkKey,
+  virtualProfile,
+  VIRTUAL_MODEL_PROFILES,
 } from "../server.mjs";
 
 const CFG_TEST = {
@@ -136,6 +138,23 @@ test("SR5 fail-closed: CJK 본문도 비율 절단으로 천장 준수", () => {
   const { truncated, finalEst } = enforceCeiling([], [], recent, CFG_TEST);
   assert.ok(finalEst <= CFG_TEST.HARD_CEILING, `finalEst ${finalEst} ≤ ceiling`);
   assert.ok(truncated > 0);
+});
+
+test("virtual profiles: 3개 1M ID가 정확한 physical base와 non-self summarizer를 가짐", () => {
+  const expected = {
+    "gpt-5.6-sol-1m": "gpt-5.6-sol",
+    "gpt-5.6-terra-1m": "gpt-5.6-terra",
+    "gpt-5.6-luna-1m": "gpt-5.6-luna",
+  };
+  assert.deepEqual(Object.keys(VIRTUAL_MODEL_PROFILES).sort(), Object.keys(expected).sort());
+  for (const [virtualId, baseModel] of Object.entries(expected)) {
+    const profile = virtualProfile(virtualId);
+    assert.equal(profile.baseModel, baseModel);
+    assert.ok(profile.summaryCandidates.length >= 1);
+    assert.ok(!profile.summaryCandidates.includes(baseModel));
+    assert.ok(profile.summaryCandidates.every((model) => !model.endsWith("-1m")));
+  }
+  assert.equal(virtualProfile("gpt-5.6-sol"), null);
 });
 
 test("SR5 integration: 압축 계획이 없어도 oversized assistant 본문은 compactBody에서 천장 준수", async () => {

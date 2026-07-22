@@ -12,7 +12,7 @@ providers = {p['name']: p for p in cfg.get('Providers', cfg.get('providers', [])
 sg = providers.get('solgate')
 assert sg, 'solgate provider missing'
 assert '8321' in sg['api_base_url'], 'solgate provider not on 8321'
-for m in ('gpt-5.6-sol-1m','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'):
+for m in ('gpt-5.6-sol-1m','gpt-5.6-terra-1m','gpt-5.6-luna-1m','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna'):
     assert m in sg['models'], f'{m} not in provider models'
 " 2>/dev/null || { echo "FAIL: CCR config solgate provider"; RC=1; }
 
@@ -21,6 +21,8 @@ const router = require(process.env.HOME + "/.claude-code-router/custom-router.js
 (async () => {
   const checks = [
     ["gpt-5.6-sol-1m", 500000, "solgate,gpt-5.6-sol-1m"],
+    ["gpt-5.6-terra-1m", 500000, "solgate,gpt-5.6-terra-1m"],
+    ["gpt-5.6-luna-1m", 500000, "solgate,gpt-5.6-luna-1m"],
     ["gpt-5.6-sol", 100000, "solgate,gpt-5.6-sol"],
     ["gpt-5.6-terra", 100000, "solgate,gpt-5.6-terra"],
     ["gpt-5.6-luna", 100000, "solgate,gpt-5.6-luna"],
@@ -33,10 +35,12 @@ const router = require(process.env.HOME + "/.claude-code-router/custom-router.js
 })();
 ' 2>/dev/null || { echo "FAIL: custom-router gpt-5.6 routing table"; RC=1; }
 
-if ! grep -q 'gpt-5.6-sol-1m' "$HOME/.zshrc"; then
-  echo "FAIL: zshrc vgpt1m not wired to gpt-5.6-sol-1m"
-  RC=1
-fi
+for virtual_model in gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m; do
+  if ! grep -q "$virtual_model" "$HOME/.zshrc"; then
+    echo "FAIL: zshrc not wired to $virtual_model"
+    RC=1
+  fi
+done
 
 # 서브에이전트 티어 별칭 배선 (opus=sol / sonnet=terra / haiku=luna) — zshrc·vclaude-proxy 양쪽
 for f in "$HOME/.zshrc" "$HOME/.local/bin/vclaude-proxy"; do

@@ -13,7 +13,14 @@ function opt(name, dflt) {
 const configPath = opt("--config", path.join(os.homedir(), ".claude-code-router", "config.json"));
 const port = opt("--port", "8321");
 
-const MODELS = ["gpt-5.6-sol-1m", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MODELS = [
+  "gpt-5.6-sol-1m",
+  "gpt-5.6-terra-1m",
+  "gpt-5.6-luna-1m",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+];
 
 if (!fs.existsSync(configPath)) {
   console.error(`FAIL: CCR config not found: ${configPath}`);

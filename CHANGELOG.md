@@ -6,6 +6,18 @@
 ## [Unreleased]
 
 ### Added
+- `gpt-5.6-terra-1m`, `gpt-5.6-luna-1m` 가상 모델과 CLI alias(`vgpt terra1m`, `vgpt luna1m`)
+- 세 virtual profile의 physical base·summary 후보·sticky/fallback matrix E2E
+- `/v1/models` 3종 1M 중복 방지 및 CCR 6모델 배선
+
+### Changed
+- rolling compression, fail-closed ceiling, context retry를 sol/terra/luna 1M profile 공통 엔진으로 일반화
+- summary sidecall을 base self-call과 virtual recursion이 불가능한 profile별 후보 정책으로 변경
+- `gpt-5.6-sol-1m`과 `vgpt1m` 기존 진입점은 호환 유지
+
+## [Public hardening]
+
+### Added
 - 실제 payload 크기를 기준으로 `context_too_large`를 재현하는 SG-003 회귀 E2E
 - Terra sticky route 검증과 `ctxRetries` 운영 통계
 - VPN/Tailscale scoped DNS 장애 진단 가이드
