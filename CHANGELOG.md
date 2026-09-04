@@ -1,16 +1,23 @@
 # Changelog
 
-이 프로젝트의 주요 변경사항을 기록합니다.
-형식: [Keep a Changelog](https://keepachangelog.com/), 버전: [Semantic Versioning](https://semver.org/).
+All notable changes to this project are recorded here.
+Format: [Keep a Changelog](https://keepachangelog.com/), versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
 ### Added
+- GPT-6 Astra main model (`gpt-6-astra`) and rolling-context profile (`gpt-6-astra-1m`), available through `vgpt astra`, `vgpt1m astra`, and `vgpt astra1m`.
+- Astra-specific estimated budgets: compact above 220k, retain roughly 140k of recent context, and cap the estimated outgoing request at 240k, including tool definitions. Smaller global settings remain effective.
+- Astra model-retention and context-boundary mock coverage, plus installer and CCR registration for four physical and four virtual profiles.
+- English and Korean README entry points, an Astra hero image, and an updated setup and operations guide.
 - `gpt-5.6-terra-1m`, `gpt-5.6-luna-1m` 가상 모델과 CLI alias(`vgpt terra1m`, `vgpt luna1m`)
-- 세 virtual profile의 physical base·summary 후보·sticky/fallback matrix E2E
-- `/v1/models` 3종 1M 중복 방지 및 CCR 6모델 배선
+- Virtual-profile base models, summary candidates, and model-retention/fallback matrix tests.
+- Deduplicated virtual-model discovery and matching CCR provider registration.
 
 ### Changed
+- Astra main responses retain the selected model; upstream failures are returned without substituting Sol, Terra, or Luna. Rolling summaries use Terra/Luna candidates.
+- Regular Astra launchers explicitly pass `--autocompact 220k` before user options. Existing Sol defaults and Opus/Sol, Sonnet/Terra, Haiku/Luna worker assignments remain unchanged.
+- Documentation distinguishes portable tests, small live checks, and large-context checks. Virtual 1M is described as summary-based context, not a native or lossless one-million-token window.
 - `vgpt1m`의 `/model` Opus/Sonnet/Haiku 슬롯을 각각 Sol/Terra/Luna virtual 1M profile로 배선하고 물리 `[330k]` picker와 분리
 - 모델 문자열에 `solgate,` provider prefix와 단일 `[1m]` cap을 사용해 Default의 `[330k][1m]` 이중 라벨 제거
 - rolling compression, fail-closed ceiling, context retry를 sol/terra/luna 1M profile 공통 엔진으로 일반화

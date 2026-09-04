@@ -5,6 +5,8 @@
 _solgate_model_id() {
   local input="${1:l}"
   case "$input" in
+    astra|gpt6|gpt-6|gpt-6-astra) print -r -- "gpt-6-astra" ;;
+    astra1m|astra-1m|gpt-6-astra-1m) print -r -- "gpt-6-astra-1m" ;;
     ""|gpt|sol|gpt5.6|gpt-5.6|gpt56|gpt-5.6-sol) print -r -- "gpt-5.6-sol" ;;
     1m|sol1m|sol-1m|gpt-5.6-sol-1m)              print -r -- "gpt-5.6-sol-1m" ;;
     terra1m|terra-1m|gpt-5.6-terra-1m)             print -r -- "gpt-5.6-terra-1m" ;;
@@ -18,6 +20,8 @@ _solgate_model_id() {
 
 _solgate_cap_for() {
   case "$1" in
+    gpt-6-astra-1m) print -r -- "1m" ;; # 가상 1M; 220k부터 요약, 전송 추정 상한 240k
+    gpt-6-astra)    print -r -- "240k" ;; # 확장 문맥 미검증: 보수적 클라이언트 선언
     gpt-5.6-*-1m) print -r -- "1m" ;;    # 가상 1M — solgate가 압축 소유
     gpt-5.6-*)    print -r -- "330k" ;;  # 실창 372k − 헤드룸
     *)              print -r -- "150k" ;;
@@ -29,6 +33,9 @@ _solgate_claude() {
   # CCR 내장 라우팅으로 solgate provider에 직행한다 (타 머신 이식성 핵심).
   local model="$1"; shift
   local cap
+  local -a context_args
+  context_args=()
+  [[ "$model" == gpt-6-astra ]] && context_args=(--autocompact 220k)
   cap="$(_solgate_cap_for "$model")"
   local opus_model="solgate,gpt-5.6-sol[330k]"
   local sonnet_model="solgate,gpt-5.6-terra[330k]"
@@ -36,7 +43,7 @@ _solgate_claude() {
   local opus_name="GPT-5.6 Sol (physical 330k)"
   local sonnet_name="GPT-5.6 Terra (physical 330k)"
   local haiku_name="GPT-5.6 Luna (physical 330k)"
-  if [[ "$model" == gpt-5.6-*-1m ]]; then
+  if [[ "$model" == gpt-5.6-*-1m || "$model" == gpt-6-astra-1m ]]; then
     opus_model="solgate,gpt-5.6-sol-1m[1m]"
     sonnet_model="solgate,gpt-5.6-terra-1m[1m]"
     haiku_model="solgate,gpt-5.6-luna-1m[1m]"
@@ -55,7 +62,7 @@ _solgate_claude() {
   ANTHROPIC_DEFAULT_HAIKU_MODEL="$haiku_model" \
   ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME="$haiku_name" \
   ANTHROPIC_SMALL_FAST_MODEL="$haiku_model" \
-  claude --model "solgate,${model}[${cap}]" "$@"
+  claude --model "solgate,${model}[${cap}]" "${context_args[@]}" "$@"
 }
 
 # vgpt [sol|terra|luna|gpt5.5] — 물리 컨텍스트 세션 (기본 gpt-5.6-sol[330k])
@@ -63,7 +70,7 @@ vgpt() {
   local model
   if [[ "${1:l}" == "models" || "$1" == "--models" ]]; then vgpt-models; return 0; fi
   if [[ -n "$1" && "$1" != -* ]]; then
-    model="$(_solgate_model_id "$1")" || { print -u2 -- "vgpt: unknown model '$1' (sol/terra/luna/sol1m/terra1m/luna1m/gpt5.5)"; return 2; }
+    model="$(_solgate_model_id "$1")" || { print -u2 -- "vgpt: unknown model '$1' (astra/astra1m/sol/terra/luna/sol1m/terra1m/luna1m/gpt5.5)"; return 2; }
     shift
   else
     model="gpt-5.6-sol"
@@ -73,13 +80,25 @@ vgpt() {
 
 # vgpt1m — 가상 1M 세션 (solgate가 300k 초과분을 롤링 요약)
 vgpt1m() {
-  _solgate_claude "gpt-5.6-sol-1m" "$@"
+  local model="gpt-5.6-sol-1m"
+  if [[ -n "$1" && "$1" != -* ]]; then
+    model="$(_solgate_model_id "$1")" || { print -u2 -- "vgpt1m: unknown model '$1'"; return 2; }
+    case "$model" in
+      gpt-6-astra|gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna) model="${model}-1m" ;;
+      gpt-6-astra-1m|gpt-5.6-sol-1m|gpt-5.6-terra-1m|gpt-5.6-luna-1m) ;;
+      *) print -u2 -- "vgpt1m: no virtual profile for '$model'"; return 2 ;;
+    esac
+    shift
+  fi
+  _solgate_claude "$model" "$@"
 }
 
 vgpt-models() {
   cat <<'EOF'
-solgate GPT models ([Nk] = auto-compact 시점 선언, 하드정지 아님):
-  vgpt            → gpt-5.6-sol[330k]    실창 372k, 한도 시 terra→luna 자동 폴백+문구
+solgate GPT models ([Nk] = 모델 선택 라벨; 실제 자동 요약 옵션은 모델별로 다름, 하드정지 아님):
+  vgpt astra      → gpt-6-astra[240k]     Astra 고정, --autocompact 220k
+  vgpt1m astra / vgpt astra1m → gpt-6-astra-1m[1m]  220k부터 요약, 전송 추정 상한 240k
+  vgpt            → gpt-5.6-sol[330k]    기존 클라이언트 예산 330k, 한도 시 terra→luna 자동 폴백+문구
   vgpt terra      → gpt-5.6-terra[330k]
   vgpt luna       → gpt-5.6-luna[330k]
   vgpt 1m / vgpt1m → gpt-5.6-sol-1m[1m]    sol 기반 가상 1M

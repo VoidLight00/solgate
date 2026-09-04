@@ -1,8 +1,8 @@
-// solgate — GPT-5.6 sol/terra/luna 위의 가상 1M 컨텍스트 프록시.
+// solgate — GPT-6 Astra / GPT-5.6 sol/terra/luna 위의 가상 1M 컨텍스트 프록시.
 // Claude Code(CCR) ↔ ChatGPT OAuth upstream 사이에서, 300k 초과 대화의 오래된
 // 구간을 물리 모델로 롤링 요약하고 최근 ~200k는 원문 유지한다.
 // 물리 창을 늘리는 게 아니라 압축 계층이다 — 오래된 턴은 요약본(무손실 아님).
-// 사양 SSoT: REQUIREMENTS.md (SR1~SR13)
+// 사양 SSoT: REQUIREMENTS.md (SR1~SR14)
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -33,12 +33,24 @@ export const CFG = {
 };
 
 export const PHYSICAL_MODELS = Object.freeze([
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
 ]);
 
 export const VIRTUAL_MODEL_PROFILES = Object.freeze({
+  "gpt-6-astra-1m": Object.freeze({
+    baseModel: "gpt-6-astra",
+    summaryCandidates: Object.freeze(["gpt-5.6-terra", "gpt-5.6-luna"]),
+    // The upstream's expanded window is not established for this OAuth route.
+    // These are conservative estimator budgets, not claims about native capacity.
+    contextLimits: Object.freeze({
+      COMPACT_TRIGGER: 220_000,
+      KEEP_RECENT: 140_000,
+      HARD_CEILING: 240_000,
+    }),
+  }),
   "gpt-5.6-sol-1m": Object.freeze({
     baseModel: "gpt-5.6-sol",
     summaryCandidates: Object.freeze(["gpt-5.6-terra", "gpt-5.6-luna"]),
@@ -55,6 +67,15 @@ export const VIRTUAL_MODEL_PROFILES = Object.freeze({
 
 export function virtualProfile(model) {
   return VIRTUAL_MODEL_PROFILES[model] || null;
+}
+
+export function configForProfile(baseCfg, profile) {
+  if (!profile?.contextLimits) return baseCfg;
+  const cfg = { ...baseCfg };
+  for (const [key, limit] of Object.entries(profile.contextLimits)) {
+    cfg[key] = Math.min(baseCfg[key], limit);
+  }
+  return cfg;
 }
 export const stats = {
   started: new Date().toISOString(),
@@ -73,6 +94,7 @@ export const stats = {
 // Terra는 사용자가 지정한 sticky worker route라 실패 시 다른 모델로 바꾸지 않고
 // 오류를 그대로 노출한다. 재시도/세션 재개 역시 Terra로만 수행한다.
 export const FAILOVER_CHAIN = {
+  "gpt-6-astra": [], // Explicit Astra selection stays Astra, including virtual sessions.
   "gpt-5.6-sol": ["gpt-5.6-terra", "gpt-5.6-luna"],
   "gpt-5.6-terra": [],
   "gpt-5.6-luna": ["gpt-5.6-terra", "gpt-5.6-sol"],
@@ -352,6 +374,7 @@ async function summarizeChunk(chunk, profile) {
 }
 
 export async function compactBody(body, baseCfg = CFG, profile = VIRTUAL_MODEL_PROFILES["gpt-5.6-sol-1m"]) {
+  baseCfg = configForProfile(baseCfg, profile);
   // tools 정의도 실창을 먹는다 — 트리거/천장에서 차감해 마진을 보존한다.
   const toolsTok = body.tools ? estimateTokens(JSON.stringify(body.tools)) : 0;
   if (toolsTok >= baseCfg.HARD_CEILING) {
@@ -503,13 +526,14 @@ async function handleChat(req, res) {
   }
 
   const profile = virtualProfile(body.model);
+  const requestCfg = configForProfile(CFG, profile);
   const isVirtual = profile != null;
   let outBody = body;
   let meta = null;
   if (profile) {
     outBody = { ...body, model: profile.baseModel };
     if (Array.isArray(outBody.messages)) {
-      const result = await compactBody(outBody, CFG, profile);
+      const result = await compactBody(outBody, requestCfg, profile);
       if (result.error) {
         res.writeHead(result.error.status, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: result.error.message, type: "invalid_request_error", code: result.error.code } }));
@@ -557,14 +581,14 @@ async function handleChat(req, res) {
       // no-op이 되어 같은 body를 재전송하고 같은 400을 받는다 (FAILURE_LOG SG-003).
       // 요약 청크는 캐시 히트라 재압축 비용은 경계 재계산뿐이다.
       if (isVirtual && r.status === 400 && /context_too_large/.test(txt) && Array.isArray(body.messages)) {
-        const sent = meta?.finalEst ?? CFG.HARD_CEILING;
-        const target = Math.floor(sent * CFG.CTX_RETRY_SHRINK);
-        if (ctxRetries < CFG.CTX_MAX_RETRIES) {
+        const sent = meta?.finalEst ?? requestCfg.HARD_CEILING;
+        const target = Math.floor(sent * requestCfg.CTX_RETRY_SHRINK);
+        if (ctxRetries < requestCfg.CTX_MAX_RETRIES) {
           const shrunk = await compactBody({ ...body, model: baseModel }, {
-            ...CFG,
+            ...requestCfg,
             COMPACT_TRIGGER: Math.floor(target * 0.9),
             HARD_CEILING: target,
-            KEEP_RECENT: Math.min(CFG.KEEP_RECENT, Math.floor(target * 0.6)),
+            KEEP_RECENT: Math.min(requestCfg.KEEP_RECENT, Math.floor(target * 0.6)),
           }, profile);
           // 진전이 없으면(재압축 불가/동일 크기) 재시도는 같은 400을 반복할 뿐이다 — 에러를 노출한다.
           if (shrunk.meta && shrunk.meta.finalEst < sent) {
@@ -650,7 +674,7 @@ async function handleModels(res) {
         object: "model",
         owned_by: "solgate",
         context_length: CFG.VIRTUAL_CONTEXT,
-        description: `Virtual 1M context over ${profile.baseModel} (rolling summarization above ${CFG.COMPACT_TRIGGER} tokens).`,
+        description: `Virtual 1M context over ${profile.baseModel} (rolling summarization above ${configForProfile(CFG, profile).COMPACT_TRIGGER} estimated tokens).`,
       });
     }
     res.writeHead(200, { "content-type": "application/json" });

@@ -4,7 +4,7 @@ set -u
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 RC=0
 
-TESTS="tests/unit.test.mjs tests/fallback.e2e.test.mjs tests/ctxretry.e2e.test.mjs tests/ctxwindow.e2e.test.mjs tests/virtual-models.e2e.test.mjs"
+TESTS="tests/unit.test.mjs tests/fallback.e2e.test.mjs tests/ctxretry.e2e.test.mjs tests/ctxwindow.e2e.test.mjs tests/virtual-models.e2e.test.mjs tests/astra-boundaries.e2e.test.mjs"
 for test_file in $TESTS; do
   if [ ! -f "$ROOT/$test_file" ]; then
     echo "FAIL: required test missing: $test_file"

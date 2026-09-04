@@ -14,6 +14,8 @@ const configPath = opt("--config", path.join(os.homedir(), ".claude-code-router"
 const port = opt("--port", "8321");
 
 const MODELS = [
+  "gpt-6-astra",
+  "gpt-6-astra-1m",
   "gpt-5.6-sol-1m",
   "gpt-5.6-terra-1m",
   "gpt-5.6-luna-1m",
