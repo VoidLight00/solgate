@@ -237,7 +237,7 @@ do_install() {
   else
     fail "solgate 기동 실패 — ~/.solgate/logs/launchd.err.log 확인"; exit 1
   fi
-  virtual_models="gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m"
+  virtual_models="gpt-6-astra-1m gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m"
   exposed="$(curl -fsS --max-time 8 "http://127.0.0.1:${SOLGATE_PORT}/v1/models" 2>/dev/null)"
   for virtual_model in $virtual_models; do
     if ! printf '%s' "$exposed" | grep -q "\"${virtual_model}\""; then

@@ -2,92 +2,112 @@
 
 # solgate
 
-![hero](assets/hero.png)
+![solgate — GPT-6 Astra for Claude Code](assets/hero-astra.png)
 
-ChatGPT 구독(OAuth)으로 Claude Code에서 GPT-5.6 sol/terra/luna를 풀컨텍스트로 쓰는 로컬 게이트웨이.
-세 모델 각각의 가상 1M 컨텍스트(롤링 요약) · 쿼터 자동 폴백(+문구 노출) · 서브에이전트 모델 티어.
+**GPT-6 Astra and GPT-5.6 Sol, Terra, and Luna in Claude Code.**<br>
+A local gateway with explicit model selection, rolling context, and visible model fallback.
 
-![License](https://img.shields.io/badge/License-MIT-yellow.svg) ![Status](https://img.shields.io/badge/status-active-brightgreen.svg) ![Platform](https://img.shields.io/badge/platform-macOS-black.svg) ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg) ![Gates](https://img.shields.io/badge/HARD%20gates-8%20passing-success.svg) ![Conventional%20Commits](https://img.shields.io/badge/commits-conventional-FE5196.svg)
+[한국어](README.ko.md) · [Setup & operations guide](docs/GUIDE.md) · [Changelog](CHANGELOG.md)
+
+[![CI](https://github.com/VoidLight00/solgate/actions/workflows/ci.yml/badge.svg)](https://github.com/VoidLight00/solgate/actions/workflows/ci.yml) ![License](https://img.shields.io/badge/License-MIT-yellow.svg) ![Platform](https://img.shields.io/badge/platform-macOS-black.svg) ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933.svg)
 
 </div>
 
----
+## Start with Astra
 
-## 무엇을 하는가
-
-- **세 모델 모두 가상 1M** — `gpt-5.6-sol-1m`, `gpt-5.6-terra-1m`, `gpt-5.6-luna-1m`을 제공한다. 각 모델의 실창은 input 372k이며, solgate는 300k 초과 대화의 오래된 구간을 다른 물리 모델로 롤링 요약하고 최근 ~200k를 원문 유지한다. 물리 창을 늘리는 게 아니라 압축 계층이라 오래된 턴은 요약본이 된다.
-- **쿼터 자동 폴백 + 문구 노출** — 사용량 한도(429)·쿨다운 시 sol은 terra→luna, luna는 terra→sol 순으로 자동 전환하고 응답 첫머리에 대체 모델을 표시한다. 명시적으로 선택한 terra worker route는 sticky라 실패를 다른 모델로 숨기지 않는다.
-- **서브에이전트 모델 티어** — Claude Code의 Agent/Workflow 별칭이 `opus`=sol, `sonnet`=terra, `haiku`=luna로 풀린다. 메인은 sol로, 워커는 가볍게.
-- **fail-closed 천장** — 어떤 경로로도 모델 실창(372k)을 초과해 전송하지 않는다. tools 정의 토큰까지 차감해 마진을 지키며, 업스트림이 추정 오차로 `context_too_large`를 반환하면 직전 실제 전송량 기준으로 최대 3회 더 줄인다.
-
-폴백이 일어나면 대화에 이렇게 보인다:
-
-```
-[solgate fallback] gpt-5.6-sol → gpt-5.6-terra (gpt-5.6-sol: usage_limit_reached, gpt-5.6-sol 리셋 ~11:42)
+```bash
+vgpt astra          # Astra, with Claude Code auto-compaction at 220k
+vgpt1m astra        # Astra with server-managed rolling context
 ```
 
-## Quick Start
+Selecting Astra keeps the main response on `gpt-6-astra`. Errors remain visible; solgate does not silently substitute Sol, Terra, or Luna. Rolling summaries use Terra, then Luna, without changing the main response model.
 
-전제: macOS · Node 20+ · [Claude Code CLI](https://claude.com/claude-code) · [claude-code-router](https://github.com/musistudio/claude-code-router)(`ccr`) · OpenAI 호환 ChatGPT OAuth 업스트림(기본 `http://127.0.0.1:8317`) 로그인 완료. 현재 설치기는 macOS launchd 전용이며 Linux/Windows는 지원하지 않는다.
+Existing defaults stay the same: `vgpt` starts Sol, and the Claude Code worker aliases remain Opus → Sol, Sonnet → Terra, and Haiku → Luna.
+
+## Install
+
+Requires **macOS, Node.js 20+, [Claude Code CLI](https://claude.com/claude-code), [claude-code-router](https://github.com/musistudio/claude-code-router) (`ccr`), and a running ChatGPT OAuth upstream** such as VibeProxy. Sign in to the upstream first and confirm it exposes the models you intend to use. The default upstream is `http://127.0.0.1:8317`.
 
 ```bash
 git clone https://github.com/VoidLight00/solgate.git
-cd solgate && ./setup.sh install
+cd solgate
+./setup.sh install
+source ~/.zshrc
+vgpt astra
 ```
 
-`setup.sh install`은 멱등이며 다음을 한 번에 수행한다: 전제조건 doctor(fail-closed) → luna 엔진 버그 자동 감지 시 사이드카 설치 → solgate launchd 상주(:8321) → CCR provider 비파괴 머지 → zshrc 함수 블록 → CCR 풀체인 PONG 실측. 다른 포트의 업스트림은 `./setup.sh install --upstream http://127.0.0.1:PORT`로 지정한다. 점검만: `./setup.sh doctor`, 제거: `./setup.sh uninstall`. 설치기는 기존 CCR 설정과 바이너리를 삭제하지 않는다.
-
-## 사용법
+The installer checks prerequisites, registers a macOS launchd service, merges the solgate provider into CCR, installs the shell functions, and checks a small request through CCR. It adds a Luna sidecar only when its compatibility probe detects the supported upstream bug. Existing CCR providers are preserved. Linux and Windows installation are not currently supported.
 
 ```bash
-vgpt              # gpt-5.6-sol[330k] — 물리 풀컨텍스트 (기본)
-vgpt terra        # gpt-5.6-terra[330k]
-vgpt luna         # gpt-5.6-luna[330k]
-vgpt1m            # gpt-5.6-sol-1m[1m] — sol 기반 가상 1M
-vgpt terra1m     # gpt-5.6-terra-1m[1m] — terra 기반 가상 1M, main route sticky
-vgpt luna1m      # gpt-5.6-luna-1m[1m] — luna 기반 가상 1M
-vgpt models       # 도움말
+./setup.sh doctor
+./setup.sh install --upstream http://127.0.0.1:PORT
+./setup.sh uninstall
 ```
 
-세션 중 전환은 `/model` picker에서 Sol 1M(Opus), Terra 1M(Sonnet), Luna 1M(Haiku)을 선택하거나 `/model solgate,gpt-5.6-terra-1m[1m]`처럼 직접 지정한다. `vgpt` 세션의 picker는 기존 물리 `[330k]` 티어를 유지하고, `vgpt1m` 세션만 세 virtual `[1m]` 티어를 보여준다. 상태 확인:
+For updates and existing custom wrappers, see the [guide](docs/GUIDE.md#설치와-업데이트).
 
-```bash
-curl http://127.0.0.1:8321/solgate/stats
-# {"requests":..,"compactions":..,"cacheHits":..,"fallbacks":..,"ctxRetries":..,"degraded":..}
-```
+## Choose a model
 
-## 아키텍처
+| Command | Main model | Context handling |
+|---|---|---|
+| `vgpt astra` | GPT-6 Astra | Explicit client auto-compaction at 220k |
+| `vgpt1m astra` or `vgpt astra1m` | GPT-6 Astra | Rolling summaries managed by solgate |
+| `vgpt` or `vgpt sol` | GPT-5.6 Sol | Existing `[330k]` client configuration |
+| `vgpt terra` | GPT-5.6 Terra | Existing `[330k]` client configuration |
+| `vgpt luna` | GPT-5.6 Luna | Existing `[330k]` client configuration |
+| `vgpt1m` | GPT-5.6 Sol | Rolling summaries managed by solgate |
+| `vgpt terra1m` | GPT-5.6 Terra | Rolling summaries managed by solgate |
+| `vgpt luna1m` | GPT-5.6 Luna | Rolling summaries managed by solgate |
+
+Run `vgpt models` for the installed command list. In a virtual session, the Opus/Sonnet/Haiku picker slots use the corresponding Sol/Terra/Luna virtual profiles. In a regular session, they retain their existing client configurations. Astra changes the main model, not those worker assignments.
+
+## What “virtual 1M” means
+
+**It is a summary-based conversation layer, not a native one-million-token window.** Older turns become summaries; recent turns remain verbatim when they fit the budget. Details can be lost during summarization.
+
+| Virtual profile | Summarize above* | Keep recent* | Estimated send ceiling* | Summary models | Main-response fallback |
+|---|---:|---:|---:|---|---|
+| Astra | 220k | ~140k | 240k | Terra → Luna | None |
+| Sol | 300k | ~200k | 330k | Terra → Luna | Terra → Luna |
+| Terra | 300k | ~200k | 330k | Luna → Sol | None |
+| Luna | 300k | ~200k | 330k | Terra → Sol | Terra → Sol |
+
+\* These are local token estimates and default budgets, not guaranteed upstream capacities. Tool definitions count toward the ceiling. Smaller global settings also constrain Astra. If the upstream rejects a virtual request as too large, solgate can shrink it and retry up to three times.
+
+For regular Astra sessions, the launcher explicitly passes `--autocompact 220k`; the `[240k]` model label is not treated as proof of native capacity. An expanded Astra window has not been established for this OAuth route.
+
+## How it connects
 
 ```mermaid
 flowchart LR
-  A["Claude Code<br/>(vgpt / vgpt1m)"] --> B["CCR :3456<br/>Anthropic↔OpenAI"]
-  B --> C["solgate :8321<br/>3× 가상 1M·압축·폴백"]
-  C -->|"sol-1m → sol<br/>terra-1m → terra"| D["VibeProxy :8317<br/>ChatGPT OAuth"]
-  C -->|"luna-1m → luna"| E["sidecar/주 upstream<br/>luna route"]
-  C -.->|"300k 초과분<br/>profile별 다른 모델 요약"| D
-  D --> F["chatgpt.com backend<br/>실창 372k"]
+  A["Claude Code<br/>vgpt / vgpt1m"] --> B["CCR :3456<br/>Protocol conversion + routing"]
+  B --> C["solgate :8321<br/>Rolling summaries + model policies"]
+  C --> D["VibeProxy / OAuth upstream<br/>Default :8317"]
+  C -. "Optional Luna compatibility route" .-> E["Sidecar"]
+  D --> F["ChatGPT model backend"]
   E --> F
 ```
 
-토폴로지·물리 팩트·트러블슈팅·수동 재현 절차는 [docs/GUIDE.md](docs/GUIDE.md)가 정본이다.
+Sol and Luna can switch models when the upstream reports a usage limit or unavailable authentication. Terra and Astra keep the selected main model and surface its error. When fallback occurs, the response starts with a notice such as:
 
-## 검증
-
-모든 완료 주장은 HARD 게이트의 종료코드로만 판정한다:
-
-```bash
-SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh .   # 평시 (대형 e2e 스킵)
-bash gates/verify_solgate.sh .                       # 전체 (~330k 토큰 compaction e2e 포함)
+```text
+[solgate fallback] gpt-5.6-sol → gpt-5.6-terra (...)
 ```
 
-게이트 8종: unit(순수 함수 + 폴백·실창 재압축 모킹 e2e) · service · e2e_small · e2e_compact(needle+캐시+비강등) · wiring · install · secrets · no_vertical_stripe. 요구사항 SSoT는 [REQUIREMENTS.md](REQUIREMENTS.md)(SR1~SR13), 실패 기록은 [FAILURE_LOG.md](FAILURE_LOG.md), 세션별 작업 기록은 [docs/BACKLOG.md](docs/BACKLOG.md).
+Fallback does not bypass account limits. Availability and usage remain subject to the upstream account and plan. This is an independent project, not an official OpenAI or Anthropic integration.
 
-## 알아둘 것
+## Verify and inspect
 
-- 세 가상 1M 모델 모두 같은 rolling compression과 fail-closed 천장을 사용한다. 차이는 최종 응답을 생성하는 physical base와 fallback/sticky 정책이다.
-- 이 프로젝트는 모델 실창을 늘리지 못한다. "1M"은 요약 기반 가상 계층이며 무손실이 아니다.
-- 플랜 사용량 한도는 sol/terra/luna가 공유한다. 폴백은 한도를 우회하는 게 아니라 소진 순서를 관리한다.
-- 업스트림(ChatGPT OAuth)은 본인 구독·본인 계정 범위에서만 사용한다.
+```bash
+bash gates/ci_gate.sh .                            # Portable mocks + static checks; no model calls
+SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh .   # Live checks, excluding the large-context test
+bash gates/verify_solgate.sh .                    # Full checks, including a ~330k Sol compaction test
+curl http://127.0.0.1:8321/solgate/stats
+```
+
+The CI badge covers the portable suite. Live gates require configured services and account availability, and consume model usage. Skipping the large-context test leaves that behavior unverified. Astra boundary tests cover model retention, compaction thresholds, tool budgets, and request ceilings with mocks; they do not establish a maximum native window or long-context summary quality.
+
+See [verification scope and troubleshooting](docs/GUIDE.md#검증-범위), [requirements](REQUIREMENTS.md), [failure records](FAILURE_LOG.md), and the [implementation history](docs/BACKLOG.md).
 
 ## License
 

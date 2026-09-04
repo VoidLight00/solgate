@@ -1,188 +1,242 @@
-# GPT-5.6 풀스택 게이트웨이 구축 방법서 (정본)
+# solgate 설치·운영 가이드
 
-> ChatGPT 구독(OAuth) 기반으로 Claude Code에서 gpt-5.6 sol/terra/luna를
-> 풀컨텍스트·자동폴백·서브에이전트 티어까지 쓰는 전체 방법의 정본 문서다.
-> 시간순 작업 기록은 `BACKLOG.md`, 요구사항 SSoT는 `../REQUIREMENTS.md`.
-> 작성: 2026-07-10, 검증 증거는 각 절에 명시.
+Claude Code에서 GPT-6 Astra와 GPT-5.6 Sol·Terra·Luna를 사용하기 위한 가이드입니다. 모델별 연결 정책과 요약 예산은 [REQUIREMENTS.md](../REQUIREMENTS.md)의 SR1~SR14, 구현 이력은 [BACKLOG.md](BACKLOG.md), 주요 변경은 [CHANGELOG.md](../CHANGELOG.md)에서 관리합니다.
 
-## 1. 전체 토폴로지
+[English overview](../README.md) · [한국어 소개](../README.ko.md)
 
+## Astra 추가 사항
+
+| 항목 | 동작 |
+|---|---|
+| 일반 세션 | `vgpt astra` → `gpt-6-astra`, 클라이언트에 `--autocompact 220k` 명시 |
+| 가상 세션 | `vgpt1m astra` 또는 `vgpt astra1m` → `gpt-6-astra-1m` |
+| 메인 응답 | Astra로 유지하며 실패 시 다른 모델로 자동 전환하지 않음 |
+| 이전 대화 요약 | Terra → Luna 후보 사용 |
+| 가상 요약 예산 | 추정 220k 초과 시 요약, 최근 약 140k 원문 유지, 전송 추정 상한 240k |
+| 기존 동작 | 기본 Sol, Opus=Sol·Sonnet=Terra·Haiku=Luna 분담 유지 |
+
+Astra를 고르면 메인 응답을 Astra가 담당합니다. 요약 호출과 Claude Code 작업자는 별도 모델을 사용할 수 있습니다. 따라서 'Astra 고정'은 모든 내부 호출까지 Astra만 사용한다는 뜻은 아닙니다.
+
+이전 대화를 요약하는 가상 1M은 원문 100만 토큰을 한꺼번에 보내거나 보존한다는 의미가 아닙니다. 숫자는 문자 기반 추정 예산이며, 이 OAuth 경로의 Astra 네이티브 최대 문맥을 실측한 결과가 아닙니다.
+
+## 연결 구조
+
+```mermaid
+flowchart LR
+  CLI["Claude Code<br/>vgpt / vgpt1m"] --> CCR["CCR :3456<br/>변환·provider 선택"]
+  CCR --> SG["solgate :8321<br/>요약·캐시·모델별 전환 정책"]
+  SG --> UP["OAuth upstream<br/>기본 :8317"]
+  SG -. "Luna 호환 문제가 확인된 경우" .-> SC["선택적 sidecar :8331"]
+  UP --> API["ChatGPT 모델 백엔드"]
+  SC --> API
 ```
-터미널 (vgpt / vgpt1m / vgpt terra / vgpt luna)
-  │  Claude Code (--model 명시 + [Nk] 라벨 = auto-compact 시점)
-  ▼
-CCR :3456 (claude-code-router, Anthropic↔OpenAI 변환 + custom-router.js 라우팅)
-  │
-  ├─ gpt-5.6-sol / terra / luna ──────► solgate :8321  ─┬─► VibeProxy :8317 (sol/terra)
-  │   (SOLGATE_FAILOVER: 한도 시                        └─► cpap-sidecar :8331 (luna)
-  │    체인 폴백 + 응답에 문구 주입)                          │
-  ├─ gpt-5.6-{sol,terra,luna}-1m ─────► solgate :8321        │ ChatGPT OAuth (codex provider)
-  │   (SOLGATE_ALWAYS: 300k 초과분                          ▼
-  │    luna/terra 롤링 요약 = 가상 1M)                   chatgpt.com backend
-  ├─ >330k 요청 ─────────────────────► vibeproxy,gemini-3-flash (장문맥 우회)
-  └─ 기타 모델(gemini/glm/gpt-5.5) ──► VibeProxy :8318 (Anthropic passthrough)
+
+| 구성요소 | 역할 |
+|---|---|
+| Claude Code CLI | 사용자 대화, 도구 실행, 작업자 호출 |
+| 설치판 셸 함수 `install/solgate.zsh` | 모델과 클라이언트 옵션을 정하고 `solgate,<model>` 형식으로 CCR에 요청 |
+| claude-code-router (`ccr`) | Anthropic 형식과 OpenAI 형식 변환, solgate provider 선택 |
+| solgate `server.mjs` | 가상 모델을 실제 모델에 연결, 이전 대화 요약, 전송 예산 관리, 모델별 자동 전환 |
+| VibeProxy 등의 OAuth upstream | 로그인한 계정으로 지원 모델 호출 |
+| 선택적 Luna sidecar | 설치기가 지원하는 특정 모델·인증 호환 문제를 감지한 경우에만 별도 연결 제공 |
+
+공개 설치판은 CCR provider prefix를 사용하므로 별도 `custom-router.js` 없이 작동하도록 구성됩니다. 기존 사용자 정의 라우터가 있는 환경은 그 라우터의 우선순위와 Astra 매핑도 확인해야 합니다. cmux는 터미널 작업 공간으로 사용할 수 있으며 설치의 필수 조건은 아닙니다.
+
+## 설치와 업데이트
+
+### 처음 설치
+
+전제조건은 macOS, Node.js 20+, Claude Code CLI, `ccr`, 로그인한 OAuth upstream입니다. 기본 업스트림 주소는 `http://127.0.0.1:8317`입니다. 먼저 upstream의 `/v1/models`에 사용할 모델이 있는지 확인합니다.
+
+```bash
+curl http://127.0.0.1:8317/v1/models
+git clone https://github.com/VoidLight00/solgate.git
+cd solgate
+./setup.sh doctor
+./setup.sh install
+source ~/.zshrc
+vgpt astra
 ```
 
-핵심 물리 팩트 (2026-07-10 실측):
-- gpt-5.6 sol/terra/luna 실창 = **input 372k + output 128k** (gpt-5.5는 272k)
-- VibeProxy는 자체 컨텍스트 캡이 없다 — 288,327 토큰 단일 요청 통과 실측
-- 200k "한계"의 실체는 클라이언트측 `[Nk]` 라벨/캡. 라벨은 Claude Code가
-  API 호출 전에 떼며(auto-compact 시점 선언), 실창보다 낮게 선언하면 세션이
-  compact-and-continue로 영원히 산다
-- 어떤 프록시도 모델 실창을 늘릴 수 없다 — "1M"은 압축 계층(가상)이며
-  오래된 턴은 요약본이 된다(무손실 아님)
+다른 업스트림 주소를 사용한다면 다음처럼 지정합니다.
 
-## 2. 구성요소와 역할
+```bash
+./setup.sh install --upstream http://127.0.0.1:PORT
+```
 
-| 구성요소 | 위치 | 역할 |
-|---|---|---|
-| codex CLI ≥0.144 | npm `@openai/codex` (nvm) | 백엔드가 클라이언트 버전으로 모델 게이트 — 낡으면 "requires a newer version of Codex" 400 |
-| VibeProxy 1.8.224 | /Applications (내장 cli-proxy-api-plus 7.2.54) | ChatGPT OAuth → OpenAI/Anthropic 호환 API (:8317/:8318). 모델 목록은 시작 시 원격 카탈로그(router-for-me/models) fetch — **새 모델은 앱 재시작으로 노출** |
-| cpap-sidecar | `~/.local/bin/cli-proxy-api-sidecar` (7.2.58) + launchd `com.voidlight.cpap-sidecar` :8331 | 내장 7.2.54의 luna auth 매칭 버그(SG-001b) 우회 전용. **회수 조건: VibeProxy가 7.2.58+ 내장하면 solgate의 `SOLGATE_UPSTREAM_LUNA`를 8317로 되돌리고 launchd unload** |
-| solgate | `~/projects/solgate/server.mjs` + launchd `com.solgate.gateway` :8321 | ① 가상 1M(300k 초과분 청크 롤링 요약+캐시) ② 쿼터 자동 폴백+문구 주입 ③ luna→sidecar 업스트림 선택 |
-| CCR | `~/.claude-code-router/{config.json,custom-router.js}` :3456 | Anthropic↔OpenAI 변환. custom-router가 모델명→provider 결정(solgate/vibeproxy/gemini 우회) |
-| 래퍼 | `~/.zshrc` (vgpt/vgpt1m) + `~/.local/bin/vclaude-proxy` | 모델·캡 선택, 서브에이전트 티어 env, OAuth 자가치유(vgpt-auth-fix) |
+설치 순서는 전제조건 확인 → 필요시 Luna 호환 사이드카 설치 → solgate 서비스 등록 → CCR provider 병합 → 셸 함수 연결 → CCR를 통과하는 소형 요청 확인입니다. 기본 설치의 마지막 응답 검사는 Sol을 사용하므로, 이 결과만으로 Astra까지 검증되었다고 판단하지 않습니다.
 
-## 3. 사용법
+서비스 등록은 macOS launchd 전용입니다. 공개 설치기의 label은 `com.solgate.gateway`와 선택적 `com.solgate.sidecar`입니다. 반복 설치를 지원하며 기존 CCR provider를 병합 보존합니다. 기존 CCR 설정이나 업스트림 바이너리를 통째로 삭제하지 않습니다.
+
+### 기존 설치 업데이트
+
+수정 사항이 없는 checkout에서 실행합니다. 로컬 변경이 있다면 먼저 보존한 뒤 병합합니다.
+
+```bash
+cd /path/to/solgate
+git pull --ff-only
+./setup.sh install
+source ~/.zshrc
+vgpt models
+vgpt astra
+```
+
+이미 별도 `vgpt`·`vgpt1m` 함수를 운영하는 경우, `.zshrc`에서 나중에 정의되거나 불러온 함수가 우선합니다. 다음 명령으로 실제로 불러온 함수를 확인할 수 있습니다.
+
+```zsh
+whence -v vgpt vgpt1m
+functions vgpt vgpt1m
+```
+
+공개 설치기는 `install/solgate.zsh`를 불러옵니다. 개인 cmux 래퍼·인증 복구 스크립트·별도 모델 라우터는 리포 밖의 사용자 설정이므로 자동 동기화를 가정하지 않습니다. 기존 기능을 유지해야 한다면 설치판의 Astra alias, provider 모델 목록, 명시적 `--autocompact 220k` 동작을 해당 래퍼에도 반영합니다.
+
+### 점검과 제거
+
+```bash
+./setup.sh doctor
+./setup.sh uninstall
+```
+
+`--no-probe`와 `--no-pong`은 각각 업스트림 호환성 확인과 최종 응답 확인을 생략합니다. 사용했다면 해당 검증은 완료되지 않은 상태입니다.
+
+## 사용법
 
 ### 세션 시작
 
 ```bash
-vgpt              # gpt-5.6-sol[330k] — 물리 풀컨텍스트, 품질 무손실
-vgpt terra        # gpt-5.6-terra[330k]
-vgpt luna         # gpt-5.6-luna[330k]
-vgpt gpt5.5       # 레거시 [150k]
-vgpt1m            # gpt-5.6-sol-1m[1m] — sol 기반 가상 1M
-vgpt terra1m     # gpt-5.6-terra-1m[1m] — terra 기반 가상 1M(sticky)
-vgpt luna1m      # gpt-5.6-luna-1m[1m] — luna 기반 가상 1M
+vgpt astra          # 일반 Astra
+vgpt1m astra        # 가상 1M Astra
+vgpt astra1m        # vgpt1m astra와 동일
+vgpt                # 일반 Sol — 기본값 유지
+vgpt terra          # 일반 Terra
+vgpt luna           # 일반 Luna
+vgpt1m              # 가상 1M Sol
+vgpt terra1m        # 가상 1M Terra
+vgpt luna1m         # 가상 1M Luna
+vgpt models         # 설치된 명령 도움말
 ```
 
-### 세션 중 모델 전환 (슬래시)
+일반 Astra는 `solgate,gpt-6-astra[240k]`와 `--autocompact 220k`를 전달합니다. 사용자 옵션은 그 뒤에 전달합니다. 가상 Astra는 `solgate,gpt-6-astra-1m[1m]`를 사용하며 서버가 대화를 압축합니다.
 
+`[240k]`·`[330k]`·`[1m]`은 클라이언트에 전달하는 라벨입니다. 라벨만 보고 실제 upstream 수용량이나 자동 요약 시점을 보장하지 않습니다. Astra 일반 세션에는 이 때문에 별도의 자동 요약 옵션을 명시합니다.
+
+### 세션 중 모델 전환
+
+```text
+/model solgate,gpt-6-astra[240k]
+/model solgate,gpt-6-astra-1m[1m]
+/model solgate,gpt-5.6-terra-1m[1m]
 ```
-/model gpt-5.6-sol[330k]
-/model gpt-5.6-terra[330k]
-/model gpt-5.6-luna[330k]
-```
-`/model` 피커의 슬롯도 티어 매핑됨(Opus=sol, Sonnet=terra, Haiku=luna).
-`[330k]` 라벨을 빼면 기본 200k 가정으로 돌아가므로 항상 붙인다.
 
-### 가상 1M profile
+`/model`로 모델을 바꾸는 것과 새 실행 시의 옵션 설정은 별개입니다. 일반 Astra의 명시적 220k 자동 요약 설정까지 적용하려면 `vgpt astra`로 새 세션을 시작합니다.
 
-| 가상 모델 | 최종 physical base | summary 후보 | main fallback |
-|---|---|---|---|
-| `gpt-5.6-sol-1m` | sol | terra → luna | terra → luna |
-| `gpt-5.6-terra-1m` | terra | luna → sol | 없음(sticky) |
-| `gpt-5.6-luna-1m` | luna | terra → sol | terra → sol |
+### 작업자와 모델 선택 슬롯
 
-세 profile 모두 300k 초과분 rolling compression, 330k fail-closed ceiling, 실제 전송 추정치 기준 최대 3회 context retry를 공유한다. summary 요청에는 자기 base와 `*-1m` virtual ID를 사용하지 않는다.
-
-`vgpt1m`으로 시작하면 Claude Code `/model`의 Opus/Sonnet/Haiku 슬롯이 각각 Sol 1M/Terra 1M/Luna 1M `[1m]`으로 표시된다. 반대로 `vgpt`는 기존 물리 3종 `[330k]` 슬롯을 유지한다. 메인 모델과 각 슬롯은 `solgate,` provider prefix를 사용하므로 custom router 없이도 동일하게 동작한다.
-
-### 서브에이전트 티어 (Agent/Workflow)
-
-vgpt/vgpt1m 세션 안에서 별칭이 다음으로 풀린다:
-
-| 별칭 | 실모델 | 용도 |
+| Claude Code 별칭 | 일반 세션 | 가상 세션 |
 |---|---|---|
-| `model: "opus"` | gpt-5.6-sol[330k] | 최상위 판단·아키텍처 |
-| `model: "sonnet"` | gpt-5.6-terra[330k] | 범용 워커 |
-| `model: "haiku"` | gpt-5.6-luna[330k] | 경량·백그라운드 (SMALL_FAST 포함) |
+| `opus` | Sol | Sol 1M |
+| `sonnet` | Terra | Terra 1M |
+| `haiku` | Luna | Luna 1M |
 
-커스텀 에이전트(`~/.claude/agents/*.md`)의 `model:` frontmatter도 같은 별칭 사용.
-메인 세션 모델은 `--model` 명시라 티어 env의 영향을 받지 않는다.
+커스텀 에이전트의 `model:` 별칭도 같은 설정을 사용합니다. 메인 모델은 `--model`로 따로 지정하므로 Astra를 선택해도 이 분담은 바뀌지 않습니다. Luna는 작은 백그라운드 작업용 `SMALL_FAST` 설정에도 사용됩니다.
 
-### 자동 폴백
+## 가상 컨텍스트와 자동 전환
 
-한도(429/usage_limit_reached/model_cooldown/auth_unavailable) 시 solgate가
-아래 정책으로 전환하고 응답 첫머리에 문구를 주입한다.
+### 모델별 예산
 
-| 요청 모델 | 자동 전환 순서 | 정책 |
+| 가상 모델 | 응답 모델 | 요약 후보 | 요약 시작 추정치 | 최근 원문 유지 목표 | 전송 추정 상한 |
+|---|---|---|---:|---:|---:|
+| `gpt-6-astra-1m` | Astra | Terra → Luna | 220k 초과 | 약 140k | 240k |
+| `gpt-5.6-sol-1m` | Sol | Terra → Luna | 300k 초과 | 약 200k | 330k |
+| `gpt-5.6-terra-1m` | Terra | Luna → Sol | 300k 초과 | 약 200k | 330k |
+| `gpt-5.6-luna-1m` | Luna | Terra → Sol | 300k 초과 | 약 200k | 330k |
+
+Astra는 자체 예산과 전역 설정 중 작은 값을 각각 적용합니다. 도구 정의의 추정 크기도 전송 상한에서 차감합니다. 요약에는 자신의 응답 모델이나 `*-1m` 가상 모델을 호출하지 않습니다.
+
+문자 기반 추정은 upstream의 실제 토큰 계산과 다르며 출력 예산 등에도 영향을 받습니다. `context_too_large`가 반환되면 직전 전송 추정치의 70%를 새 상한으로 삼아 최대 3회 재압축합니다. 실제 전송 크기가 작아지지 않으면 같은 요청을 반복하지 않고 오류를 반환합니다. `/solgate/stats`의 `ctxRetries`로 확인할 수 있습니다.
+
+### 메인 응답의 전환 정책
+
+| 요청 모델 | 사용량 한도·인증 불가 시 후보 | 정책 |
 |---|---|---|
-| `gpt-5.6-sol` | terra → luna | 메인 세션 생존 우선 |
-| `gpt-5.6-terra` | 없음 | 명시적 worker route를 유지하는 sticky 정책 |
-| `gpt-5.6-luna` | terra → sol | 경량 작업의 완료 우선 |
+| Astra | 없음 | Astra를 유지하고 오류 표시 |
+| Sol | Terra → Luna | 대체 모델을 표시하고 이어서 응답 |
+| Terra | 없음 | 명시한 Terra를 유지하고 오류 표시 |
+| Luna | Terra → Sol | 대체 모델을 표시하고 이어서 응답 |
 
+이 정책은 일반 모델과 그 가상 모델의 메인 응답에 적용됩니다. 요약 모델 후보는 별도 정책입니다. 자동 전환 시 다음 안내가 응답 첫머리에 붙습니다.
+
+```text
+[solgate fallback] gpt-5.6-sol → gpt-5.6-terra (...)
 ```
-[solgate fallback] gpt-5.6-sol → gpt-5.6-terra (gpt-5.6-sol: usage_limit_reached, gpt-5.6-sol 리셋 ~11:42)
-```
 
-체인 전체가 죽거나 terra가 실패하면 마지막 에러를 원문 그대로 반환한다(숨기지 않음).
-플랜(prolite) 사용량 한도는 sol/terra/luna 공유 — 대형 테스트 반복 실행 금지.
+모든 후보가 실패하면 오류를 반환합니다. 자동 전환은 구독 한도를 우회하지 않으며, 요약 요청도 upstream 사용량을 소비합니다.
 
-### 컨텍스트 초과 자동 복구
-
-가상 1M 요청은 330k 이하로 압축해 보내지만, 업스트림의 실제 계산은 로컬 추정과 다를 수 있다.
-업스트림이 `context_too_large`를 반환하면 직전 전송 추정치의 70%를 새 천장으로 삼아 최대 3회 재압축한다.
-재압축 결과가 실제로 작아지지 않으면 같은 요청을 반복하지 않고 원래 400 오류를 반환한다. 재시도 횟수는 `/solgate/stats`의 `ctxRetries`에서 확인한다.
-
-### 상태 확인
+## 상태와 설정
 
 ```bash
-curl http://127.0.0.1:8321/solgate/stats   # requests/compactions/cacheHits/fallbacks/degraded
-tail ~/.solgate/logs/solgate.log            # 요청별 메타 (원문은 기록 안 함)
-curl http://127.0.0.1:8317/v1/models        # VibeProxy 모델 목록
-curl http://127.0.0.1:8331/v1/models        # sidecar 모델 목록
+curl http://127.0.0.1:8321/healthz
+curl http://127.0.0.1:8321/v1/models
+curl http://127.0.0.1:8321/solgate/stats
+tail ~/.solgate/logs/solgate.log
 ```
 
-## 4. 처음부터 재현 (새 머신)
+주요 통계는 `requests`, `compactions`, `cacheHits`, `fallbacks`, `ctxRetries`, `degraded`입니다. 상태 endpoint가 정상이라는 사실과 모델이 실제로 응답한다는 사실은 따로 확인합니다.
 
-### 원웨이 자동 설치 (권장)
+| 환경 변수 | 기본값 | 용도 |
+|---|---|---|
+| `SOLGATE_PORT` | `8321` | solgate 수신 포트 |
+| `SOLGATE_UPSTREAM` | `http://127.0.0.1:8317` | 기본 upstream |
+| `SOLGATE_UPSTREAM_LUNA` | 기본 upstream과 동일 | 필요한 경우 Luna만 별도 upstream 사용 |
+| `SOLGATE_COMPACT_TRIGGER` | `300000` | 가상 요약 시작 추정치 |
+| `SOLGATE_KEEP_RECENT` | `200000` | 최근 원문 유지 목표 |
+| `SOLGATE_HARD_CEILING` | `330000` | 가상 요청 전송 추정 상한 |
+| `SOLGATE_HOME` | `~/.solgate` | 로컬 데이터 경로 |
 
-전제: macOS + Node 20+ + Claude Code CLI + claude-code-router(`ccr`) +
-VibeProxy(ChatGPT OAuth 로그인 완료). 그 다음 한 커맨드:
+Astra profile은 위 문맥 관련 전역 값과 자체 `220000 / 140000 / 240000` 중 각각 작은 값을 사용합니다. 환경 변수를 바꿨다면 실제 서비스를 시작하는 설정에 반영하고 서비스를 다시 시작해야 합니다.
+
+## 검증 범위
 
 ```bash
-git clone https://github.com/VoidLight00/solgate.git
-cd solgate && ./setup.sh install
+bash gates/ci_gate.sh .
+SOLGATE_SKIP_BIG=1 bash gates/verify_solgate.sh .
+bash gates/verify_solgate.sh .
 ```
 
-setup.sh가 하는 일: doctor(전제조건 fail-closed 검증) → luna auth 프로브(구엔진
-버그 감지 시 사이드카 자동 설치) → solgate launchd 상주 → CCR provider 비파괴
-머지 → zshrc 함수 블록 추가 → CCR 풀체인 PONG 실측. 상태 점검만 하려면
-`./setup.sh doctor`, 제거는 `./setup.sh uninstall`.
-
-설치판 셸 함수(install/solgate.zsh)는 `solgate,<model>` provider-prefix 형식을
-써서 **custom-router 없이 CCR 내장 라우팅만으로 동작**한다(이식성 핵심,
-PREFIX-PONG 실측). 아래는 수동 재현 절차다.
-
-### 수동 재현
-
-1. **codex CLI 최신화**: `npm install -g @openai/codex@latest` → `codex exec -m gpt-5.6-sol "PONG"` 확인
-2. **VibeProxy** 설치·OAuth 로그인 → 새 모델 안 보이면 앱 재시작(원격 카탈로그 재fetch)
-3. **sidecar** (luna 버그가 있는 엔진일 때만): 공식 릴리스 darwin_aarch64 →
-   `~/.local/bin/cli-proxy-api-sidecar`, config `~/.cli-proxy-api/sidecar-config.yaml`(port 8331,
-   auth-dir 공유), launchd plist 로드
-4. **solgate**: 이 리포 clone → launchd `com.solgate.gateway` 로드 →
-   `bash gates/verify_solgate.sh "$(pwd)"` (평시엔 `SOLGATE_SKIP_BIG=1`)
-5. **CCR**: config.json에 provider `solgate`(:8321, 물리 3종+가상 3종) 추가,
-   custom-router.js에 SOLGATE_ALWAYS/SOLGATE_FAILOVER/OVERFLOW_LIMITS 반영 → `ccr restart`
-6. **래퍼**: zshrc vgpt/vgpt1m(모델 alias·캡·티어 env), vclaude-proxy 동일 반영
-7. **검증**: `bash gates/verify_solgate.sh` exit 0 + CCR 경유 3모델 PONG
-
-수정 파일 전체 인벤토리(백업 규칙 `*.bak-solwire-*`):
-`~/.zshrc` · `~/.local/bin/vclaude-proxy` · `~/.claude-code-router/config.json` ·
-`~/.claude-code-router/custom-router.js` · `~/.cli-proxy-api/sidecar-config.yaml` ·
-`~/Library/LaunchAgents/com.solgate.{gateway,sidecar}.plist`
-
-## 5. 트러블슈팅
-
-| 증상 | 원인 | 조치 |
+| 검사 | 확인하는 것 | 확인하지 않는 것 |
 |---|---|---|
-| `requires a newer version of Codex` 400 | codex CLI 구버전 | `npm i -g @openai/codex@latest` |
-| `unknown provider for model X` | VibeProxy 카탈로그 낡음 | VibeProxy 재시작 |
-| `auth_unavailable ... model=<m>` (특정 모델만) | 프록시 엔진의 모델-auth 매칭 버그 | codex CLI로 교차확인 → CLI가 되면 엔진 문제. 최신 릴리스 격리 인스턴스로 검증 후 sidecar |
-| `model_cooldown` / `usage_limit_reached` | 플랜 사용량 한도 | 자동 폴백이 처리. 전 모델 소진이면 리셋 대기(에러에 resets_in_seconds) |
-| `no auth (providers=codex)` 전 모델 | codex 토큰 로테이션 | `~/bin/vgpt-auth-fix` (vgpt가 자동 실행) |
-| 세션이 컨텍스트 한계에서 죽음 | `[Nk]` 라벨이 실창보다 높음 | 라벨을 실창 아래로(sol 330k) — auto-compact이 먼저 발동 |
-| `no such host`인데 `nslookup`/`dig`는 정상 | macOS scoped DNS 또는 VPN/Tailscale DNS override와 시스템 resolver 불일치 | `scutil --dns`, `dscacheutil -q host -a name chatgpt.com`, `tailscale status`를 함께 비교. VPN DNS를 일시 해제해 재현 여부를 확인하고 조직 정책이 있으면 관리자와 조정 |
-| 가상 1M 요약 품질 저하 | 요약 프롬프트/청크 크기 | server.mjs `SUMMARIZER_SYSTEM`·`CHUNK_TOKENS` 튜닝, stats.degraded 확인 |
+| Portable CI | 순수 함수, localhost mock, 설치 파일·정적 규칙 | 실제 계정 응답·문맥 수용량 |
+| 소형 live 검사 | 실행 중인 서비스를 통한 모델 왕복·스트리밍 | 긴 대화 압축·장기 요약 품질 |
+| 대형 live 검사 | Sol profile의 약 330k 압축 시나리오 | Astra 최대 문맥이나 모든 모델의 장문 품질 |
 
-## 6. 설계 원칙 (이 방법의 뼈대)
+2026-09-05 Astra 추가 시 로컬 mock 38개와 실제 Claude Code의 일반·가상 Astra 파일 읽기 시나리오를 확인했습니다. Astra의 220k 요약 경계·240k 추정 상한·도구 예산 차감·모델 유지 검증은 mock 기반입니다. 이 기록은 전체 live 게이트 통과나 Astra 최대 문맥 검증을 뜻하지 않습니다.
 
-1. **선언≠증거** — 모든 "된다"는 exit code·PONG·로그로만 판정 (HARD 게이트 7종)
-2. **fail-closed 천장** — 어떤 경로로도 실창(372k) 초과 전송 금지, 초과분은 요약/절단
-3. **앱 무변조** — 서명된 앱 바이너리는 건드리지 않고 사이드카/자체 레이어로 우회
-4. **폴백은 보이게** — 자동 전환은 하되 어떤 모델로 갔는지 문구로 반드시 노출
-5. **회수 조건 명시** — 임시 우회(sidecar)는 제거 조건을 코드 주석과 문서에 박아둔다
-6. **기록 영속** — 세션마다 BACKLOG.md append, 실패는 FAILURE_LOG.md
+`SOLGATE_SKIP_BIG=1`은 큰 모델 호출을 생략하며 해당 대형 시나리오는 미검증으로 남습니다. Live 검사는 서비스 설정, 계정 접근 권한, 남은 사용량이 필요합니다. CI 배지는 GitHub Actions의 portable 검사 범위만 나타냅니다.
+
+이전 [BACKLOG.md](BACKLOG.md)에 있는 특정 앱 버전과 GPT-5.6 문맥 실측은 당시 환경의 기록입니다. 현재 모든 계정의 사양이나 Astra의 문맥 한도로 일반화하지 않습니다.
+
+## 문제 해결
+
+| 증상 | 확인할 곳 | 조치 |
+|---|---|---|
+| `vgpt astra`가 unknown model을 반환 | 실제로 불러온 셸 함수 | 업데이트 후 `source ~/.zshrc`; 사용자 정의 함수의 덮어쓰기 여부 확인 |
+| upstream 목록에 Astra가 없음 | upstream 버전·카탈로그·계정 접근 | upstream의 공식 업데이트 절차와 계정 모델 목록 확인 후 재시작 |
+| 목록에는 있지만 Astra가 다른 모델로 연결됨 | CCR provider와 기존 custom router | `solgate` provider의 Astra ID와 명시적 Astra 경로 확인 |
+| `requires a newer version of Codex` | upstream이 사용하는 Codex 클라이언트 정보 | 해당 upstream의 공식 호환성 안내에 따라 업데이트 |
+| 특정 모델만 `auth_unavailable` | 해당 모델의 인증·엔진 호환성 | 동일 계정의 지원 모델 확인; 설치기 `doctor`의 호환성 결과 확인 |
+| `model_cooldown`·`usage_limit_reached` | 계정 사용량·오류 응답 | 모델별 전환 정책 확인; 사용 가능한 후보가 없으면 한도 갱신 대기 |
+| 긴 요청이 `context_too_large`로 실패 | 실제 실행 옵션·도구 정의·전송 예산 | 일반 Astra는 `vgpt astra`로 다시 시작; 가상 경로는 `ctxRetries`와 압축 설정 확인 |
+| 가상 세션에서 이전 세부사항 누락 | 요약 결과·`degraded` 통계 | 필요한 세부사항을 파일로 보존하고 다시 제공; 요약을 무손실 보관으로 사용하지 않음 |
+| `no such host`인데 `dig`는 정상 | macOS resolver·VPN DNS 설정 | `scutil --dns`, `dscacheutil -q host -a name chatgpt.com`, VPN 상태를 비교 |
+
+문제 보고 시 재현 명령, 모델 ID, 오류 종류, 사용한 버전과 검사 결과를 기록합니다. 토큰·쿠키·Authorization 헤더·원문 대화는 공개 이슈에 붙이지 않습니다.
+
+## 설계 원칙
+
+1. 완료 여부는 실제 응답, 테스트 출력, 게이트 종료코드로 확인합니다.
+2. 가상 요청의 추정 상한을 코드로 관리하며 이를 네이티브 최대 창과 혼동하지 않습니다.
+3. Astra·Terra는 선택한 메인 모델을 유지하고, Sol·Luna의 대체 모델은 응답에 표시합니다.
+4. 앱 바이너리 수정 대신 자체 게이트웨이와 필요한 호환 경로를 사용합니다.
+5. 요구사항·실패 기록·변경 이력을 함께 관리합니다.
+
+MIT 라이선스의 독립 프로젝트입니다. 모델 이용 조건과 사용량은 각 upstream 서비스와 계정에 따릅니다.

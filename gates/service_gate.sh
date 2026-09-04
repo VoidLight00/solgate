@@ -31,7 +31,7 @@ import json,sys
 d=json.load(sys.stdin)
 ids=[m["id"] for m in d["data"]]
 by_id={m["id"]:m for m in d["data"]}
-for model_id in ("gpt-5.6-sol-1m","gpt-5.6-terra-1m","gpt-5.6-luna-1m"):
+for model_id in ("gpt-6-astra-1m","gpt-5.6-sol-1m","gpt-5.6-terra-1m","gpt-5.6-luna-1m"):
     v=by_id.get(model_id)
     assert v, f"{model_id} missing"
     assert v.get("context_length")==1000000, f"{model_id} context_length != 1000000"

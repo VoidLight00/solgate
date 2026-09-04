@@ -1,4 +1,4 @@
-// 3종 virtual 1M profile E2E — 정확한 physical base, rolling compression, sticky/fallback 검증.
+// 4종 virtual 1M profile E2E — 정확한 physical base, rolling compression, sticky/fallback 검증.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -10,6 +10,7 @@ import path from "node:path";
 const MOCK_PORT = 8401;
 const GATE_PORT = 8400;
 const bases = new Map([
+  ["gpt-6-astra-1m", "gpt-6-astra"],
   ["gpt-5.6-sol-1m", "gpt-5.6-sol"],
   ["gpt-5.6-terra-1m", "gpt-5.6-terra"],
   ["gpt-5.6-luna-1m", "gpt-5.6-luna"],
@@ -32,7 +33,7 @@ function mockUpstream() {
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({
           object: "list",
-          data: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((id) => ({ id })),
+          data: ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((id) => ({ id })),
         }));
       }
       const body = JSON.parse(raw || "{}");
@@ -46,6 +47,10 @@ function mockUpstream() {
       if (messages[0]?.content === "force-terra-limit") {
         res.writeHead(429, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { type: "model_cooldown", message: "sticky terra" } }));
+      }
+      if (messages[0]?.content === "force-astra-limit") {
+        res.writeHead(429, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { type: "model_cooldown", message: "sticky astra" } }));
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ choices: [{ message: { content: `OK-${body.model}` } }] }));
@@ -99,7 +104,9 @@ for (const [virtualId, baseModel] of bases) {
     requests = [];
     const messages = [{ role: "system", content: "system" }];
     for (let i = 0; i < 8; i += 1) {
-      messages.push({ role: "user", content: `u${i} ${filler(1000)}` });
+      // Distinct prefixes keep each profile's sidecall assertion independent of
+      // the valid cross-profile cache shared by Astra and Sol's summary policy.
+      messages.push({ role: "user", content: `${virtualId} u${i} ${filler(1000)}` });
       messages.push({ role: "assistant", content: `a${i} ${filler(1000)}` });
     }
     const response = await chat(virtualId, messages);
@@ -121,7 +128,17 @@ test("terra-1m: physical terra sticky 오류를 그대로 반환", async () => {
   assert.equal(data.error.type, "model_cooldown");
 });
 
-test("/v1/models: virtual 1M 3종을 중복 없이 노출", async () => {
+test("Astra 물리/가상 선택은 429를 그대로 반환하고 다른 모델로 전환하지 않음", async () => {
+  for (const model of ["gpt-6-astra", "gpt-6-astra-1m"]) {
+    requests = [];
+    const response = await chat(model, [{ role: "user", content: "force-astra-limit" }]);
+    assert.equal(response.status, 429);
+    assert.equal((await response.json()).error.type, "model_cooldown");
+    assert.deepEqual(requests.map((request) => request.model), ["gpt-6-astra"]);
+  }
+});
+
+test("/v1/models: virtual 1M 4종을 중복 없이 노출", async () => {
   const data = await (await fetch(`http://127.0.0.1:${GATE_PORT}/v1/models`)).json();
   const ids = data.data.map((model) => model.id);
   for (const virtualId of bases.keys()) {

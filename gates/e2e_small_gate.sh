@@ -4,8 +4,8 @@ set -u
 PORT="${SOLGATE_PORT:-8321}"
 RC=0
 
-# non-stream: 세 virtual profile이 각 physical base까지 도달하는지 확인
-for model in gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m; do
+# non-stream: 네 virtual profile이 각 physical base까지 도달하는지 확인
+for model in gpt-6-astra-1m gpt-5.6-sol-1m gpt-5.6-terra-1m gpt-5.6-luna-1m; do
   reply="$(curl -fsS --max-time 90 "http://127.0.0.1:${PORT}/v1/chat/completions" \
     -H 'Content-Type: application/json' \
     -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: GATE-PONG\"}]}" \

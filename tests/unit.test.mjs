@@ -12,6 +12,9 @@ import {
   compactBody,
   chunkKey,
   virtualProfile,
+  configForProfile,
+  CFG,
+  FAILOVER_CHAIN,
   VIRTUAL_MODEL_PROFILES,
 } from "../server.mjs";
 
@@ -140,8 +143,9 @@ test("SR5 fail-closed: CJK 본문도 비율 절단으로 천장 준수", () => {
   assert.ok(truncated > 0);
 });
 
-test("virtual profiles: 3개 1M ID가 정확한 physical base와 non-self summarizer를 가짐", () => {
+test("virtual profiles: 4개 1M ID가 정확한 physical base와 non-self summarizer를 가짐", () => {
   const expected = {
+    "gpt-6-astra-1m": "gpt-6-astra",
     "gpt-5.6-sol-1m": "gpt-5.6-sol",
     "gpt-5.6-terra-1m": "gpt-5.6-terra",
     "gpt-5.6-luna-1m": "gpt-5.6-luna",
@@ -155,6 +159,33 @@ test("virtual profiles: 3개 1M ID가 정확한 physical base와 non-self summar
     assert.ok(profile.summaryCandidates.every((model) => !model.endsWith("-1m")));
   }
   assert.equal(virtualProfile("gpt-5.6-sol"), null);
+});
+
+test("Astra profile: 보수적 예산을 적용하고 더 작은 전역 설정과 기존 profile을 보존", () => {
+  const profile = virtualProfile("gpt-6-astra-1m");
+  const resolved = configForProfile(CFG, profile);
+  assert.equal(resolved.COMPACT_TRIGGER, 220_000);
+  assert.equal(resolved.KEEP_RECENT, 140_000);
+  assert.equal(resolved.HARD_CEILING, 240_000);
+  assert.deepEqual(configForProfile(CFG_TEST, profile), CFG_TEST);
+  assert.equal(configForProfile(CFG, virtualProfile("gpt-5.6-sol-1m")), CFG);
+  assert.equal(CFG.COMPACT_TRIGGER, 300_000);
+  assert.deepEqual(profile.summaryCandidates, ["gpt-5.6-terra", "gpt-5.6-luna"]);
+  assert.deepEqual(FAILOVER_CHAIN["gpt-6-astra"], []);
+});
+
+test("Astra profile: 정확한 트리거 경계와 기존 Sol 300k 경계를 구분", () => {
+  const astraCfg = configForProfile(CFG, virtualProfile("gpt-6-astra-1m"));
+  const messages = [{ role: "user", content: "old" }, { role: "assistant", content: "ack" },
+    { role: "user", content: "x".repeat(600_000) }];
+  const exact = totalTokens(messages);
+  assert.equal(planCompaction(messages, { ...astraCfg, COMPACT_TRIGGER: exact }), null);
+  assert.ok(planCompaction(messages, { ...astraCfg, COMPACT_TRIGGER: exact - 1 }));
+  const between = convo(12, 10_000);
+  assert.ok(totalTokens(between) > astraCfg.COMPACT_TRIGGER);
+  assert.ok(totalTokens(between) < CFG.COMPACT_TRIGGER);
+  assert.ok(planCompaction(between, astraCfg));
+  assert.equal(planCompaction(between, CFG), null);
 });
 
 test("SR5 integration: 압축 계획이 없어도 oversized assistant 본문은 compactBody에서 천장 준수", async () => {
