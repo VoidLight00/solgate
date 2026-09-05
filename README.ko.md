@@ -20,7 +20,7 @@ vgpt astra          # Astra — Claude Code에 220k 자동 요약 시점 명시
 vgpt1m astra        # Astra — solgate가 긴 대화를 요약하며 관리
 ```
 
-Astra를 선택하면 메인 응답은 `gpt-6-astra`로 유지됩니다. 오류가 나도 Sol·Terra·Luna로 몰래 바꾸지 않고 오류를 표시합니다. 가상 1M의 이전 대화 요약에는 Terra, 다음 후보로 Luna를 사용하며 메인 응답 모델은 바뀌지 않습니다.
+Astra 실행기는 Claude Code와 solgate 양쪽에서 메인 모델의 자동 전환을 끕니다. 일반·가상 Astra 프로세스에 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`을 설정해, 업스트림 오류를 재시도하다가 클라이언트가 Opus 별칭(Sol)으로 바꾸는 경로도 막습니다. 오류는 그대로 오류로 표시합니다. 이전 대화 요약은 Terra, 다음 후보로 Luna를 사용하며 메인 응답 모델은 바뀌지 않습니다.
 
 기존 기본값도 유지됩니다. `vgpt`는 Sol로 시작하며, Claude Code의 작업자 별칭은 Opus → Sol, Sonnet → Terra, Haiku → Luna입니다.
 
@@ -61,6 +61,17 @@ vgpt astra
 
 설치된 명령 목록은 `vgpt models`에서 확인하실 수 있습니다. 가상 세션의 Opus/Sonnet/Haiku 선택 슬롯은 각각 Sol/Terra/Luna의 가상 모델을 사용하며, 일반 세션은 기존 클라이언트 설정을 유지합니다. Astra 선택은 메인 모델만 바꾸며 작업자 분담은 유지합니다.
 
+이미 실행 중인 프로세스에는 새 설정이 적용되지 않습니다. 업데이트한 뒤 기존 작업 폴더에서 다시 시작해 대화를 이어갑니다.
+
+```bash
+source ~/.zshrc
+vgpt1m astra --resume SESSION_ID
+# 또는 같은 폴더의 가장 최근 대화를 이어갑니다.
+vgpt1m astra --continue
+```
+
+일반 Astra는 위 명령의 `vgpt1m astra` 대신 `vgpt astra`를 사용합니다. `/model`만으로는 시작 시 환경 설정이 적용되지 않습니다. 클라이언트 자동 전환 차단은 해당 프로세스가 끝날 때까지 유지되며, 수동으로 다른 모델을 골라도 풀리지 않습니다. solgate 자체의 모델별 정책은 계속 적용됩니다.
+
 ## 가상 1M의 의미
 
 **이전 대화를 요약해 이어가는 기능이며, 원문 100만 토큰을 한 번에 읽는 기능은 아닙니다.** 오래된 턴은 요약으로 바뀌고 최근 턴은 예산 안에서 원문으로 유지합니다. 요약 과정에서 세부 정보가 사라질 수 있습니다.
@@ -88,7 +99,7 @@ flowchart LR
   E --> F
 ```
 
-Sol·Luna는 사용량 한도나 인증 불가 오류가 발생하면 정해진 후보로 전환합니다. Terra·Astra는 선택한 메인 모델을 유지하며 오류를 표시합니다. 자동 전환 시 응답 첫머리에 다음과 같은 안내가 붙습니다.
+게이트웨이에서 Sol·Luna는 사용량 한도나 인증 불가 오류가 발생하면 정해진 후보로 전환하며, Terra·Astra는 선택한 모델의 오류를 반환합니다. Astra 실행기는 Claude Code 내부의 별도 자동 전환도 끕니다. 게이트웨이 자동 전환 시 응답 첫머리에 다음과 같은 안내가 붙습니다.
 
 ```text
 [solgate fallback] gpt-5.6-sol → gpt-5.6-terra (...)

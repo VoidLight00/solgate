@@ -32,6 +32,9 @@ _solgate_claude() {
   # 모델명은 "solgate,<model>" provider-prefix 형식 — CCR custom-router 없이도
   # CCR 내장 라우팅으로 solgate provider에 직행한다 (타 머신 이식성 핵심).
   local model="$1"; shift
+  if [[ "$model" == gpt-6-astra || "$model" == gpt-6-astra-1m ]]; then
+    local -x CLAUDE_CODE_NO_MODEL_FALLBACK=1
+  fi
   local cap
   local -a context_args
   context_args=()

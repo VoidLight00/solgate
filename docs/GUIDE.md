@@ -10,12 +10,14 @@ Claude Code에서 GPT-6 Astra와 GPT-5.6 Sol·Terra·Luna를 사용하기 위한
 |---|---|
 | 일반 세션 | `vgpt astra` → `gpt-6-astra`, 클라이언트에 `--autocompact 220k` 명시 |
 | 가상 세션 | `vgpt1m astra` 또는 `vgpt astra1m` → `gpt-6-astra-1m` |
-| 메인 응답 | Astra로 유지하며 실패 시 다른 모델로 자동 전환하지 않음 |
+| 메인 응답 | 게이트웨이의 Astra 경로 유지 + `CLAUDE_CODE_NO_MODEL_FALLBACK=1`로 클라이언트 자동 전환 차단 |
 | 이전 대화 요약 | Terra → Luna 후보 사용 |
 | 가상 요약 예산 | 추정 220k 초과 시 요약, 최근 약 140k 원문 유지, 전송 추정 상한 240k |
 | 기존 동작 | 기본 Sol, Opus=Sol·Sonnet=Terra·Haiku=Luna 분담 유지 |
 
-Astra를 고르면 메인 응답을 Astra가 담당합니다. 요약 호출과 Claude Code 작업자는 별도 모델을 사용할 수 있습니다. 따라서 'Astra 고정'은 모든 내부 호출까지 Astra만 사용한다는 뜻은 아닙니다.
+Astra 실행기는 게이트웨이와 Claude Code 클라이언트의 자동 전환을 함께 끕니다. 이전에는 solgate가 Astra 오류를 반환해도 Claude Code의 전역 `fallbackModel` 설정이 5xx·529 등의 오류 뒤에 Opus 별칭으로 바꿀 수 있었습니다. Opus는 Sol에 연결되므로 게이트웨이만 검사해서는 이 전환을 발견할 수 없었습니다.
+
+일반·가상 Astra 실행 시에만 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`을 설정합니다. 이 환경 변수의 지원은 Claude Code 2.1.261 바이너리에서 확인했습니다. 요약 후보와 Opus=Sol·Sonnet=Terra·Haiku=Luna 작업자 별칭은 유지합니다. 따라서 'Astra 고정'은 모든 내부 호출까지 Astra만 사용한다는 뜻은 아니며, 업스트림 오류를 성공 응답으로 바꾸는 기능도 아닙니다.
 
 이전 대화를 요약하는 가상 1M은 원문 100만 토큰을 한꺼번에 보내거나 보존한다는 의미가 아닙니다. 숫자는 문자 기반 추정 예산이며, 이 OAuth 경로의 Astra 네이티브 최대 문맥을 실측한 결과가 아닙니다.
 
@@ -88,7 +90,7 @@ whence -v vgpt vgpt1m
 functions vgpt vgpt1m
 ```
 
-공개 설치기는 `install/solgate.zsh`를 불러옵니다. 개인 cmux 래퍼·인증 복구 스크립트·별도 모델 라우터는 리포 밖의 사용자 설정이므로 자동 동기화를 가정하지 않습니다. 기존 기능을 유지해야 한다면 설치판의 Astra alias, provider 모델 목록, 명시적 `--autocompact 220k` 동작을 해당 래퍼에도 반영합니다.
+공개 설치기는 `install/solgate.zsh`를 불러옵니다. 개인 cmux 래퍼·인증 복구 스크립트·별도 모델 라우터는 리포 밖의 사용자 설정이므로 자동 동기화를 가정하지 않습니다. 기존 기능을 유지해야 한다면 설치판의 Astra alias, provider 모델 목록, 명시적 `--autocompact 220k`, Astra 실행에 한정한 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`을 해당 래퍼에도 반영합니다.
 
 ### 점검과 제거
 
@@ -120,6 +122,19 @@ vgpt models         # 설치된 명령 도움말
 
 `[240k]`·`[330k]`·`[1m]`은 클라이언트에 전달하는 라벨입니다. 라벨만 보고 실제 upstream 수용량이나 자동 요약 시점을 보장하지 않습니다. Astra 일반 세션에는 이 때문에 별도의 자동 요약 옵션을 명시합니다.
 
+### 기존 대화 이어가기
+
+설정 파일을 업데이트해도 이미 실행 중인 Claude Code 프로세스의 환경 변수는 바뀌지 않습니다. 해당 프로세스를 종료하고 기존 작업 폴더에서 새 실행기로 대화를 이어갑니다.
+
+```bash
+source ~/.zshrc
+vgpt1m astra --resume SESSION_ID
+# 같은 폴더의 가장 최근 대화를 이어갈 때:
+vgpt1m astra --continue
+```
+
+일반 Astra 대화는 `vgpt astra --resume SESSION_ID` 또는 `vgpt astra --continue`를 사용합니다. `SESSION_ID`는 실제 대화 ID로 바꿉니다.
+
 ### 세션 중 모델 전환
 
 ```text
@@ -128,7 +143,9 @@ vgpt models         # 설치된 명령 도움말
 /model solgate,gpt-5.6-terra-1m[1m]
 ```
 
-`/model`로 모델을 바꾸는 것과 새 실행 시의 옵션 설정은 별개입니다. 일반 Astra의 명시적 220k 자동 요약 설정까지 적용하려면 `vgpt astra`로 새 세션을 시작합니다.
+`/model`로 모델을 바꾸는 것과 새 실행 시의 환경·옵션 설정은 별개입니다. `/model`만으로는 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`이나 일반 Astra의 명시적 220k 자동 요약 설정이 추가되지 않습니다. 해당 Astra 실행기로 다시 시작하거나 대화를 이어가야 합니다.
+
+클라이언트 자동 전환 차단은 새로 시작한 프로세스의 수명 동안 유지됩니다. 그 안에서 수동으로 Sol·Terra·Luna로 바꿔도 클라이언트 차단은 유지되며, solgate 게이트웨이의 모델별 전환 정책은 별도로 계속 적용됩니다.
 
 ### 작업자와 모델 선택 슬롯
 
@@ -164,7 +181,7 @@ Astra는 자체 예산과 전역 설정 중 작은 값을 각각 적용합니다
 | Terra | 없음 | 명시한 Terra를 유지하고 오류 표시 |
 | Luna | Terra → Sol | 대체 모델을 표시하고 이어서 응답 |
 
-이 정책은 일반 모델과 그 가상 모델의 메인 응답에 적용됩니다. 요약 모델 후보는 별도 정책입니다. 자동 전환 시 다음 안내가 응답 첫머리에 붙습니다.
+표는 solgate 게이트웨이의 일반·가상 모델 메인 응답 정책입니다. Astra 실행기는 여기에 클라이언트 자동 전환 차단을 추가합니다. 요약 모델 후보는 별도 정책입니다. 게이트웨이 자동 전환 시 다음 안내가 응답 첫머리에 붙습니다.
 
 ```text
 [solgate fallback] gpt-5.6-sol → gpt-5.6-terra (...)
@@ -209,7 +226,11 @@ bash gates/verify_solgate.sh .
 | 소형 live 검사 | 실행 중인 서비스를 통한 모델 왕복·스트리밍 | 긴 대화 압축·장기 요약 품질 |
 | 대형 live 검사 | Sol profile의 약 330k 압축 시나리오 | Astra 최대 문맥이나 모든 모델의 장문 품질 |
 
-2026-09-05 Astra 추가 시 로컬 mock 38개와 실제 Claude Code의 일반·가상 Astra 파일 읽기 시나리오를 확인했습니다. Astra의 220k 요약 경계·240k 추정 상한·도구 예산 차감·모델 유지 검증은 mock 기반입니다. 이 기록은 전체 live 게이트 통과나 Astra 최대 문맥 검증을 뜻하지 않습니다.
+2026-09-05 Astra 추가 시 로컬 mock 38개와 실제 Claude Code의 일반·가상 Astra 파일 읽기 시나리오를 확인했습니다. Astra의 220k 요약 경계·240k 추정 상한·도구 예산 차감·모델 유지 검증은 mock 기반입니다. 이 기록은 전체 live 게이트 통과나 Astra 최대 문맥 검증을 뜻하지 않습니다. 당시 정상 응답·파일 읽기 검사는 클라이언트가 5xx·529 이후 다른 모델로 바꾸는 오류 경로까지 확인한 검사가 아닙니다.
+
+후속 검사에서는 실제 대화형 Claude Code 2.1.261과 로컬 모의 서버로 일시적 503 오류를 비교했습니다. 설정 전에는 `Astra 503 → Opus 200`으로 전환되었고, `CLAUDE_CODE_NO_MODEL_FALLBACK=1` 적용 후에는 `Astra 503 → Astra 503 → Astra 200`으로 복구했습니다. 적용 후 메인 요청에서 다른 모델과 전환 안내는 관측되지 않았습니다. 시작 시 Luna 보조 호출은 메인 요청과 구분해 집계했습니다. 이는 일시적 오류 후 재시도 경로의 검증입니다.
+
+기존 규칙·훅·MCP를 유지한 새 cmux 세션에서도 `vgpt1m astra`의 환경 변수 적용과 실제 파일 읽기를 확인했습니다. 도구 인자 오류를 수정한 재시도까지 세 assistant 응답의 모델은 모두 Astra였으며, solgate 기록도 HTTP 200·Astra·가상 경로·자동 전환 없음으로 일치했습니다. 화면의 1M 표시는 확인했지만, 이 소형 시나리오는 네이티브 최대 문맥이나 장문 압축 품질 검증이 아닙니다.
 
 `SOLGATE_SKIP_BIG=1`은 큰 모델 호출을 생략하며 해당 대형 시나리오는 미검증으로 남습니다. Live 검사는 서비스 설정, 계정 접근 권한, 남은 사용량이 필요합니다. CI 배지는 GitHub Actions의 portable 검사 범위만 나타냅니다.
 
@@ -221,7 +242,8 @@ bash gates/verify_solgate.sh .
 |---|---|---|
 | `vgpt astra`가 unknown model을 반환 | 실제로 불러온 셸 함수 | 업데이트 후 `source ~/.zshrc`; 사용자 정의 함수의 덮어쓰기 여부 확인 |
 | upstream 목록에 Astra가 없음 | upstream 버전·카탈로그·계정 접근 | upstream의 공식 업데이트 절차와 계정 모델 목록 확인 후 재시작 |
-| 목록에는 있지만 Astra가 다른 모델로 연결됨 | CCR provider와 기존 custom router | `solgate` provider의 Astra ID와 명시적 Astra 경로 확인 |
+| 오류 뒤 Astra가 Opus·Sol로 바뀜 | 클라이언트 자동 전환 설정·기존 프로세스 | 업데이트 후 Astra 실행기로 `--resume` 또는 `--continue`; `/model`만으로 적용되지 않음 |
+| 시작부터 Astra가 다른 모델로 연결됨 | CCR provider와 기존 custom router | `solgate` provider의 Astra ID와 명시적 Astra 경로 확인 |
 | `requires a newer version of Codex` | upstream이 사용하는 Codex 클라이언트 정보 | 해당 upstream의 공식 호환성 안내에 따라 업데이트 |
 | 특정 모델만 `auth_unavailable` | 해당 모델의 인증·엔진 호환성 | 동일 계정의 지원 모델 확인; 설치기 `doctor`의 호환성 결과 확인 |
 | `model_cooldown`·`usage_limit_reached` | 계정 사용량·오류 응답 | 모델별 전환 정책 확인; 사용 가능한 후보가 없으면 한도 갱신 대기 |
@@ -235,7 +257,7 @@ bash gates/verify_solgate.sh .
 
 1. 완료 여부는 실제 응답, 테스트 출력, 게이트 종료코드로 확인합니다.
 2. 가상 요청의 추정 상한을 코드로 관리하며 이를 네이티브 최대 창과 혼동하지 않습니다.
-3. Astra·Terra는 선택한 메인 모델을 유지하고, Sol·Luna의 대체 모델은 응답에 표시합니다.
+3. 게이트웨이는 Astra·Terra를 유지하고 Sol·Luna의 대체 모델을 표시합니다. Astra 실행기는 클라이언트 자동 전환도 끕니다.
 4. 앱 바이너리 수정 대신 자체 게이트웨이와 필요한 호환 경로를 사용합니다.
 5. 요구사항·실패 기록·변경 이력을 함께 관리합니다.
 

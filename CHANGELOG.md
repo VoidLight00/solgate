@@ -24,6 +24,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/), versioning: [Semantic V
 - summary sidecall을 base self-call과 virtual recursion이 불가능한 profile별 후보 정책으로 변경
 - `gpt-5.6-sol-1m`과 `vgpt1m` 기존 진입점은 호환 유지
 
+### Fixed
+- Disabled Claude Code's separate client-side model fallback for both regular and virtual Astra launchers with process-scoped `CLAUDE_CODE_NO_MODEL_FALLBACK=1`. Gateway-only model retention previously allowed client fallback after errors such as 5xx/529 to select Opus, which maps to Sol.
+- Documented restart/resume requirements and process lifetime: `/model` alone does not apply the startup setting, and manually selecting another model does not clear it. Worker aliases and summary-model candidates are unchanged.
+
 ## [Public hardening]
 
 ### Added
