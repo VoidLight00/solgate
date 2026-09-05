@@ -34,7 +34,7 @@ Claude Code(astra-1m / sol-1m / terra-1m / luna-1m, 라벨 [1m])
 | SR11 | CCR provider에 물리 4종+가상 4종 총 8개 모델 배선. 기존 Sol 기본값과 sol/terra/luna picker 호환 유지. `vgpt astra`는 Astra `[240k]`와 명시적 `--autocompact 220k`(사용자 옵션보다 앞), `vgpt astra1m` 및 `vgpt1m astra`는 Astra 가상 `[1m]`. Astra 선택은 메인 모델만 바꾸며 Opus=Sol·Sonnet=Terra·Haiku=Luna 분담은 유지. 각 슬롯은 물리 세션이면 물리 profile, 가상 세션이면 가상 profile 사용 | wiring_gate.sh + install_gate.sh |
 | SR12 | 쿼터/한도 자동 폴백: 429·usage_limit_reached·model_cooldown·auth_unavailable 시 sol은 terra→luna, luna는 terra→sol 순으로 전환하고 응답 첫머리에 `[solgate fallback] <from> → <to> (사유, 리셋시각)` 문구를 주입(stream/non-stream 모두). 명시적 worker route인 terra는 sticky라 다른 모델로 자동 전환하지 않는다. 폴백 불가 에러는 그대로 반환. gpt-5.6 물리 3종도 solgate 경유 | unit_gate.sh(tests/fallback.e2e.test.mjs, mock) + wiring_gate.sh |
 | SR13 | luna upstream은 기본적으로 주 업스트림을 사용한다. 구버전 엔진의 luna `auth_unavailable` 버그가 감지될 때만 setup이 검증된 CLIProxyAPI 사이드카(:8331)를 설치하고 `SOLGATE_UPSTREAM_LUNA`로 분리한다. 주 엔진이 수정되면 별도 사이드카 없이 자동 설치 | install_gate.sh + service_gate.sh |
-| SR14 | Astra 물리/가상 base 고정: 429 등 오류를 다른 모델로 숨기지 않음. Astra 가상 profile에만 COMPACT_TRIGGER 220k, KEEP_RECENT 140k, HARD_CEILING 240k를 적용하며 더 작은 전역 값은 보존. tools 추정치도 상한에서 차감. summaryCandidates는 terra/luna. 기존 모델 설정 불변. Astra 경계 검증은 localhost mock이며 라이브 대형 문맥 지원을 증명하지 않음 | unit_gate.sh(tests/astra-boundaries.e2e.test.mjs + virtual-models + unit) |
+| SR14 | Astra 물리/가상 main 고정: 게이트웨이는 429 등 오류를 다른 모델로 숨기지 않음. 실행기는 Astra 물리·가상에만 `CLAUDE_CODE_NO_MODEL_FALLBACK=1`을 프로세스 범위로 export해 Claude Code의 별도 fallbackModel 경로도 차단. 기존 Opus=Sol·Sonnet=Terra·Haiku=Luna 별칭과 비Astra 실행 환경은 보존. 5xx/529 뒤 Opus(Sol)로 바뀌는 클라이언트 오류 경로는 실제 CLI 오류 주입으로 별도 확인하며 정상 응답 검사로 대체하지 않음. Astra 가상 profile에만 COMPACT_TRIGGER 220k, KEEP_RECENT 140k, HARD_CEILING 240k를 적용하며 더 작은 전역 값은 보존. tools 추정치도 상한에서 차감. summaryCandidates는 terra/luna. 기존 모델 설정 불변. Astra 경계 검증은 localhost mock이며 라이브 대형 문맥 지원을 증명하지 않음 | unit_gate.sh(tests/astra-boundaries.e2e.test.mjs + virtual-models + unit) + install_gate.sh(Astra 전용 환경·비Astra 보존); 실제 CLI 오류 주입은 별도 실행 증거 |
 
 ## 상수 (server.mjs 상단, env 오버라이드 가능)
 
@@ -52,6 +52,12 @@ Claude Code(astra-1m / sol-1m / terra-1m / luna-1m, 라벨 [1m])
 | SUMMARY_BUDGET | 60000 | profile summary 합계 초과 시 같은 summary 후보 정책으로 계층 재요약 |
 
 Astra 가상 profile은 위 전역값과 자체 한도(트리거 220000, 최근 140000, 상한 240000) 중 각각 작은 값을 사용한다. 로컬 Codex 메타데이터의 기본 `context_window=272000`과 `max_context_window=872000`은 관측값이며 이 OAuth 경로의 확장 창 작동 증명이 아니다. 토큰 계산은 문자 기반 추정으로 실제 토크나이저와 다르다. 240k는 추정 전송 예산이고 실제 입력 길이·도구 정의·출력 예산에 따라 upstream이 거부할 수 있다. 기존 `context_too_large` 재압축 재시도를 유지하며, 무손실 1M이나 특정 물리 창을 보장하지 않는다.
+
+## Astra 클라이언트 시작 설정
+
+`CLAUDE_CODE_NO_MODEL_FALLBACK=1` 지원은 Claude Code 2.1.261 바이너리에서 확인했습니다. 설치판은 일반·가상 Astra를 시작할 때만 설정하며 이미 실행 중인 프로세스에는 소급 적용하지 않습니다. 기존 작업 폴더에서 `vgpt1m astra --resume SESSION_ID` 또는 `vgpt1m astra --continue`로 다시 시작합니다. 일반 Astra는 `vgpt astra`를 사용합니다. `/model`만으로 시작 환경은 추가되지 않습니다.
+
+차단은 해당 프로세스의 수명 동안 유지됩니다. 수동 모델 변경 뒤에도 클라이언트 자동 전환은 꺼져 있으며, solgate의 모델별 게이트웨이 정책은 별도로 적용됩니다. 작업자 별칭과 요약 모델 후보는 바꾸지 않습니다.
 
 ## 실패 모드 정책
 

@@ -20,7 +20,7 @@ vgpt astra          # Astra, with Claude Code auto-compaction at 220k
 vgpt1m astra        # Astra with server-managed rolling context
 ```
 
-Selecting Astra keeps the main response on `gpt-6-astra`. Errors remain visible; solgate does not silently substitute Sol, Terra, or Luna. Rolling summaries use Terra, then Luna, without changing the main response model.
+The Astra launchers disable automatic main-model fallback in both Claude Code and solgate. They set `CLAUDE_CODE_NO_MODEL_FALLBACK=1` for regular and virtual Astra processes, so client-side retries cannot switch an upstream error to the Opus alias (Sol). Errors remain errors. Rolling summaries still use Terra, then Luna, without changing the main response model.
 
 Existing defaults stay the same: `vgpt` starts Sol, and the Claude Code worker aliases remain Opus → Sol, Sonnet → Terra, and Haiku → Luna.
 
@@ -61,6 +61,17 @@ For updates and existing custom wrappers, see the [guide](docs/GUIDE.md#설치�
 
 Run `vgpt models` for the installed command list. In a virtual session, the Opus/Sonnet/Haiku picker slots use the corresponding Sol/Terra/Luna virtual profiles. In a regular session, they retain their existing client configurations. Astra changes the main model, not those worker assignments.
 
+Existing processes do not receive the new fallback setting. After updating, resume from the original working directory:
+
+```bash
+source ~/.zshrc
+vgpt1m astra --resume SESSION_ID
+# Or resume the latest conversation in this directory:
+vgpt1m astra --continue
+```
+
+Use `vgpt astra` instead for a regular Astra session. `/model` alone does not apply startup environment settings. Client fallback stays disabled for the lifetime of the launched process, even if you manually select another model; solgate's own model policies still apply.
+
 ## What “virtual 1M” means
 
 **It is a summary-based conversation layer, not a native one-million-token window.** Older turns become summaries; recent turns remain verbatim when they fit the budget. Details can be lost during summarization.
@@ -88,7 +99,7 @@ flowchart LR
   E --> F
 ```
 
-Sol and Luna can switch models when the upstream reports a usage limit or unavailable authentication. Terra and Astra keep the selected main model and surface its error. When fallback occurs, the response starts with a notice such as:
+At the gateway layer, Sol and Luna can switch models when the upstream reports a usage limit or unavailable authentication; Terra and Astra return the selected model's error. Astra launchers also disable Claude Code's separate client fallback. When gateway fallback occurs, the response starts with a notice such as:
 
 ```text
 [solgate fallback] gpt-5.6-sol → gpt-5.6-terra (...)
